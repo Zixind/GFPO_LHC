@@ -19,7 +19,7 @@ def PD_controller2(r_: float, pre_: float, cut_: float):
 
     Returns (new_cut, error)
     """
-    Kp = 15 #SH uses 80 for v2.
+    Kp = 80 #DEBUG: uses 15 for v1 80 for v2.
     Kd = 0
     target = 0.25
     error = r_ - target

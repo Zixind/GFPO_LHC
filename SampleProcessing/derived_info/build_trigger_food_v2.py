@@ -14,7 +14,7 @@ import h5py
 
 # use the updated readers from ae/data.py
 # (adjust import if your package layout differs)
-from ..ae.data import process_h5_file_newMC, process_h5_file0_newData
+from ..ae.data import process_h5_file_MC, process_h5_file_Data #process_h5_file_newMC, process_h5_file0_newData
 #only read in load_autoencoder for dim=2 model
 from .scoring import load_autoencoder, calculate_H_met, count_njets
 from .data_io import write_trigger_food
@@ -62,9 +62,9 @@ def load_sample(control: str, path: str, is_background: bool) -> Tuple[np.ndarra
     AA/TT are always MC (your setup).
     """
     if is_background and control == "RealData":
-        jets, ht, npv = process_h5_file0_newData(path)
+        jets, ht, npv = process_h5_file_Data(path)#process_h5_file0_newData(path)
     else:
-        jets, ht, npv = process_h5_file_newMC(path)
+        jets, ht, npv = process_h5_file_MC(path)#process_h5_file_newMC(path)
     return jets, ht, npv
 
 def plot_anomaly_score_distribution(
