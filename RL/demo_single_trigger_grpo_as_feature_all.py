@@ -268,9 +268,9 @@ def confusion_counts_at_cut(bg_scores, sig1_scores, sig2_scores, cut):
     fpr = float(fp / nb) if nb > 0 else np.nan   # background acceptance
     tnr = float(tn / nb) if nb > 0 else np.nan
 
-    precision = float(tp / (tp + fp)) if (tp + fp) > 0 else np.nan
-    recall    = tpr
-    f1 = (2.0 * precision * recall / (precision + recall)) if np.isfinite(precision) and np.isfinite(recall) and (precision + recall) > 0 else np.nan
+    precision = tp/(tp+fp) if (tp+fp)>0 else 0.0
+    recall    = tp/(tp+fn) if (tp+fn)>0 else 0.0
+    f1        = 2*precision*recall/(precision+recall) if (precision+recall)>0 else 0.0
 
     return {
         "tp": tp, "fp": fp, "tn": tn, "fn": fn,
@@ -2120,7 +2120,7 @@ def plot_inband_eff_grouped_by_trigger(eff_ad, eff_ht, *, signal_key, signal_lab
     # start y-axis at 80 for ttbar
     if signal_key == "tt":
         ax.set_ylim(bottom=85)          # keep top auto
-        # or: ax.set_ylim(80, 100)       # if you want fixed top
+        # or: ax.set_ylim(80, 100)       # if want fixed top
     else:
         ax.set_ylim(bottom=15)           # keep top auto
     # legend is methods 
@@ -2130,7 +2130,6 @@ def plot_inband_eff_grouped_by_trigger(eff_ad, eff_ht, *, signal_key, signal_lab
     finalize_diag_fig(fig)
     save_png(fig, str(outpath))
     plt.close(fig)
-
 
 
 def _plot_score_density_heatmap(time, hists, edges, *, title, outpath, run_label):
@@ -2465,9 +2464,11 @@ def log_grpo_row(rows, *, method="GRPO",
 
 def log_chunk_stats(*, chunk, trigger, method, cut, bg_pct, tt, aa, occ_mid, target, tol,
                     tp=None, fp=None, tn=None, fn=None,
-                    tpr=None, fpr=None, precision=None,
+                    tpr=None, fpr=None, precision=None, f1=None,
                     tp_tt = None, fn_tt = None,
-                    tp_h4b = None, fn_h4b = None):
+                    tp_h4b = None, fn_h4b = None,
+                    tpr_tt=None, precision_tt=None, f1_tt=None,
+                    tpr_h4b=None, precision_h4b=None, f1_h4b=None):
     bg_khz = float(bg_pct) * RATE_SCALE_KHZ
     target_khz = float(target) * RATE_SCALE_KHZ
     tol_khz = float(tol) * RATE_SCALE_KHZ
@@ -2494,17 +2495,28 @@ def log_chunk_stats(*, chunk, trigger, method, cut, bg_pct, tt, aa, occ_mid, tar
         tpr=(None if tpr is None else float(tpr)),
         fpr=(None if fpr is None else float(fpr)),
         precision=(None if precision is None else float(precision)),
+        f1=(None if f1 is None else float(f1)),
         tp_tt = (None if tp_tt is None else int(tp_tt)),
         fn_tt = (None if fn_tt is None else int(fn_tt)),
         tp_h4b = (None if tp_h4b is None else int(tp_h4b)),
         fn_h4b = (None if fn_h4b is None else int(fn_h4b)),
+
+        tpr_tt=(None if tpr_tt is None else float(tpr_tt)),
+        precision_tt=(None if precision_tt is None else float(precision_tt)),
+        f1_tt=(None if f1_tt is None else float(f1_tt)),
+
+        tpr_h4b=(None if tpr_h4b is None else float(tpr_h4b)),
+        precision_h4b=(None if precision_h4b is None else float(precision_h4b)),
+        f1_h4b=(None if f1_h4b is None else float(f1_h4b)),
     ))
 
 def write_chunk_stats_csv(path: Path):
     if not chunk_rows:
         return
     cols = ["chunk","trigger","method","cut","bg_pct","bg_khz","abs_err_khz","inband","tt","aa","occ_mid",
-            "tp","fp","tn","fn","tpr","fpr","precision","tp_tt","fn_tt","tp_h4b","fn_h4b"]
+            "tp","fp","tn","fn","tpr","fpr","precision","f1","tp_tt","fn_tt","tp_h4b","fn_h4b",
+            "tpr_tt","precision_tt","f1_tt",
+            "tpr_h4b","precision_h4b","f1_h4b"]
     with open(path, "w", newline="") as f:
         w = csv.DictWriter(f, fieldnames=cols)
         w.writeheader()
@@ -2573,7 +2585,10 @@ def _summarize_window(rows, *, target_pct, tol_pct):
     ns = (tp_sum or 0) + (fn_sum or 0)
     tpr = (tp_sum / ns) if (tp_sum is not None and ns > 0) else np.nan
     fpr = (fp_sum / nb) if (fp_sum is not None and nb > 0) else np.nan
+    
     prec = (tp_sum / (tp_sum + fp_sum)) if (tp_sum is not None and fp_sum is not None and (tp_sum + fp_sum) > 0) else np.nan
+
+    f1_macro = _safe_mean([r.get("f1", np.nan) for r in rows])
 
     return dict(
         n=int(len(rows)),
@@ -2593,6 +2608,7 @@ def _summarize_window(rows, *, target_pct, tol_pct):
         TPR=float(tpr) if np.isfinite(tpr) else np.nan,
         FPR=float(fpr) if np.isfinite(fpr) else np.nan,
         Precision=float(prec) if np.isfinite(prec) else np.nan,
+        F1=float(f1_macro) if np.isfinite(f1_macro) else np.nan,  
     )
 
 def print_every_k_chunk_stats(chunk_rows, *, trigger, c_hi, k, target_pct, tol_pct):
@@ -2611,11 +2627,12 @@ def print_every_k_chunk_stats(chunk_rows, *, trigger, c_hi, k, target_pct, tol_p
     ordered = [m for m in PLOT_METHODS if m in by_method]
 
     print(f"\n[{trigger}] Window chunks {c_lo}..{c_hi} (K={k})")
-    print("  Method    | InBand  MAE(kHz)  P95|e|(kHz)  UpFrac  DownFrac  ViolMag(kHz)  StepRMS  tt(inband)  aa(inband)  bg_mean(kHz)  cut_mean  occ_mean")
-    print("  ----------+-------------------------------------------------------------------------------------------------------------------------------")
+    print("  Method    | InBand  MAE(kHz)  P95|e|(kHz)  UpFrac  DownFrac  ViolMag(kHz)  StepRMS  tt(inband)  aa(inband)  bg_mean(kHz)  cut_mean  occ_mean | TPR FPR Precision F1")
+    print("  ----------+-------------------------------------------------------------------------------------------------------------------------------------------------")
 
     for m in ordered:
         s = _summarize_window(by_method[m], target_pct=target_pct, tol_pct=tol_pct)
+        
         rows.append({
             "Trigger": trigger,
             "Method":  m,
@@ -2626,7 +2643,7 @@ def print_every_k_chunk_stats(chunk_rows, *, trigger, c_hi, k, target_pct, tol_p
             "DownFrac": s["downfrac"],
             "tt": s["tt_inband"],
             "h_to_4b": s["aa_inband"],
-            "TP": s["TP"], "FP": s["FP"], "TN": s["TN"], "FN": s["FN"],
+            "TP": s["TP"], "FP": s["FP"], "TN": s["TN"], "FN": s["FN"], "TPR": s["TPR"], "FPR": s["FPR"], "Precision": s["Precision"], "F1": s["F1"],
         })
         if s is None:
             continue
@@ -2638,6 +2655,7 @@ def print_every_k_chunk_stats(chunk_rows, *, trigger, c_hi, k, target_pct, tol_p
 
         print(
             f"  {m:<9} |"
+            f" (n={s['n']}) |"
             f"{f(s['inband'], w=7, nd=3)}"
             f"{f(s['mae_khz'], w=10, nd=2)}"
             f"{f(s['p95_abs_err_khz'], w=13, nd=2)}"
@@ -2649,7 +2667,11 @@ def print_every_k_chunk_stats(chunk_rows, *, trigger, c_hi, k, target_pct, tol_p
             f"{f(s['aa_inband'], w=11, nd=3)}"
             f"{f(s['bg_khz_mean'], w=13, nd=1)}"
             f"{f(s['cut_mean'], w=9, nd=3)}"
-            f"{f(s['occ_mean'], w=9, nd=3)}"
+            f"{f(s['occ_mean'], w=9, nd=3)}",
+            f"{f(s['TPR'], w=9, nd=3)}",
+            f"{f(s['FPR'], w=9, nd=3)}",
+            f"{f(s['Precision'], w=11, nd=3)}",
+            f"{f(s['F1'], w=8, nd=3)}",     
         )
 
 def ecdf(x):
@@ -2874,15 +2896,35 @@ def confusion_counts_at_cut_split(bg_scores, tt_scores, h4b_scores, cut):
     fn = fn_tt + fn_h4b
     ns = ns_tt + ns_h4b
 
+    def _safe_div(a, b):
+        return (float(a) / float(b)) if (b is not None and b > 0) else np.nan
+
+    def _f1(p, r):
+        return (2.0 * p * r / (p + r)) if np.isfinite(p) and np.isfinite(r) and (p + r) > 0 else np.nan
+
+
     # rates (safe)
     tpr = float(tp / ns) if ns > 0 else np.nan
     fnr = float(fn / ns) if ns > 0 else np.nan
     fpr = float(fp / nb) if nb > 0 else np.nan
     tnr = float(tn / nb) if nb > 0 else np.nan
-    precision = float(tp / (tp + fp)) if (tp + fp) > 0 else np.nan
+    precision = float(tp / (tp + fp)) if (tp + fp) > 0 else 0
+    recall    = tp/(tp+fn) if (tp+fn)>0 else 0.0
 
     tpr_tt  = float(tp_tt / ns_tt)  if ns_tt  > 0 else np.nan
     tpr_h4b = float(tp_h4b / ns_h4b) if ns_h4b > 0 else np.nan
+
+    # per-signal precision using the SAME FP(background) you already use
+    # (binary view: signal vs background)
+    precision_tt  = _safe_div(tp_tt,  tp_tt  + fp)
+    precision_h4b = _safe_div(tp_h4b, tp_h4b + fp)
+
+    # per-signal F1
+    f1_tt  = _f1(precision_tt,  tpr_tt)
+    f1_h4b = _f1(precision_h4b, tpr_h4b)
+
+    # f1 = _f1(precision, tpr)
+    f1        = 2*precision*recall/(precision+recall) if (precision+recall)>0 else 0.0
 
     return {
         # counts
@@ -2893,16 +2935,22 @@ def confusion_counts_at_cut_split(bg_scores, tt_scores, h4b_scores, cut):
 
         # rates
         "tpr": tpr, "fnr": fnr, "fpr": fpr, "tnr": tnr,
-        "precision": precision,
+        "precision": precision, "f1": f1,
+
+        # per-signal rates
         "tpr_tt": tpr_tt,
         "tpr_h4b": tpr_h4b,
+        "precision_tt": precision_tt,
+        "precision_h4b": precision_h4b,
+        "f1_tt": f1_tt,
+        "f1_h4b": f1_h4b,
     }
 
 
 
 def summarize_confusion_from_chunk_rows(chunk_rows, *, trigger, method):
     """
-    Return MICRO-averaged rates computed from summed counts across chunks:
+    Return MICRO-averaged rates computed from summed counts across chunks: This is for overall rates for paper_table.tex
       TPR = sum(tp) / sum(tp+fn)
       FPR = sum(fp) / sum(fp+tn)
       TNR = sum(tn) / sum(fp+tn)
@@ -2946,13 +2994,15 @@ def summarize_confusion_from_chunk_rows(chunk_rows, *, trigger, method):
         fpr = FP / nb if nb > 0 else np.nan
         tnr = TN / nb if nb > 0 else np.nan
         prec = TP / (TP + FP) if (TP + FP) > 0 else np.nan
+        denom = 2 * TP + FP + FN
+        f1 = (2 * TP / denom) if denom > 0 else np.nan
 
-    return {"TPR": tpr, "FPR": fpr, "TNR": tnr, "FNR": fnr, "Precision": prec}
+    return {"TPR": tpr, "FPR": fpr, "TNR": tnr, "FNR": fnr, "Precision": prec, "F1": f1}
 
 
 def summarize_confusion_from_chunk_rows_split(chunk_rows, *, trigger, method):
     """
-    MICRO-averaged per-signal metrics from summed counts across chunks.
+    MICRO-averaged per-signal metrics from summed counts across chunks. This is for signal break down. Two signals for confusion_tt/h4b.tex
 
     Returns:
       FP, TN (background)
@@ -2980,6 +3030,8 @@ def summarize_confusion_from_chunk_rows_split(chunk_rows, *, trigger, method):
 
     def _safe_div(a, b):
         return (float(a) / float(b)) if (a is not None and b is not None and b > 0) else np.nan
+    def _f1(p, r):
+        return (2.0 * p * r / (p + r)) if np.isfinite(p) and np.isfinite(r) and (p + r) > 0 else np.nan
 
     # background rate
     FPR = _safe_div(FP, nb)
@@ -2994,10 +3046,13 @@ def summarize_confusion_from_chunk_rows_split(chunk_rows, *, trigger, method):
     Precision_tt  = _safe_div(TP_tt,  (TP_tt  or 0) + (FP or 0))
     Precision_h4b = _safe_div(TP_h4b, (TP_h4b or 0) + (FP or 0))
 
+    F1_tt  = _f1(Precision_tt,  TPR_tt)
+    F1_h4b = _f1(Precision_h4b, TPR_h4b)
+
     return {
         "FP": FP, "TN": TN, "FPR": FPR,
-        "TP_tt": TP_tt, "FN_tt": FN_tt, "TPR_tt": TPR_tt, "Precision_tt": Precision_tt,
-        "TP_h4b": TP_h4b, "FN_h4b": FN_h4b, "TPR_h4b": TPR_h4b, "Precision_h4b": Precision_h4b,
+        "TP_tt": TP_tt, "FN_tt": FN_tt, "TPR_tt": TPR_tt, "Precision_tt": Precision_tt, "F1_tt": F1_tt,
+        "TP_h4b": TP_h4b, "FN_h4b": FN_h4b, "TPR_h4b": TPR_h4b, "Precision_h4b": Precision_h4b, "F1_h4b": F1_h4b,
     }
 
 
@@ -3048,7 +3103,7 @@ def write_paper_table(rows, out_csv: Path, out_tex: Path, target_pct, tol_pct):
     """
     Writes:
       - CSV with columns:
-        Trigger, Method, MAE, P95_abs_err, InBand, UpFrac, DownFrac, TP, FP, TN, FN, tt, h_to_4b
+        Trigger, Method, MAE, P95_abs_err, InBand, UpFrac, DownFrac, TP, FP, TN, FN, Prec., F1, tt, h_to_4b
       - LaTeX table with the same columns (and bold best-per-trigger)
     """
     if not rows:
@@ -3058,7 +3113,7 @@ def write_paper_table(rows, out_csv: Path, out_tex: Path, target_pct, tol_pct):
     fieldnames = [
         "Trigger", "Method",
         "MAE", "P95_abs_err", "InBand", "UpFrac", "DownFrac",
-        "TPR", "FPR", "TNR", "FNR", "Precision",
+        "TPR", "FPR", "TNR", "FNR", "Precision", "F1",
         "tt", "h_to_4b",
     ]
     with open(out_csv, "w", newline="") as f:
@@ -3068,7 +3123,7 @@ def write_paper_table(rows, out_csv: Path, out_tex: Path, target_pct, tol_pct):
             w.writerow({k: r.get(k, None) for k in fieldnames})
 
     # ---------------- best-per-trigger ----------------
-    higher_better = {"InBand", "tt", "h_to_4b", "TPR", "TNR", "Precision"}
+    higher_better = {"InBand", "tt", "h_to_4b", "TPR", "TNR", "Precision", "F1"}
     lower_better  = {"MAE", "P95_abs_err", "UpFrac", "DownFrac", "FPR", "FNR"}
 
     # Force output order
@@ -3137,7 +3192,7 @@ def write_paper_table(rows, out_csv: Path, out_tex: Path, target_pct, tol_pct):
     lines.append(
         r"Trigger & Method & "
         r"MAE$\downarrow$ & P95$|e|$\downarrow$ & InBand$\uparrow$ & UpFrac$\downarrow$ & DownFrac$\downarrow$ & "
-        r"TPR$\uparrow$ & FPR$\downarrow$ & TNR$\uparrow$ & FNR$\downarrow$ & Prec.$\uparrow$ & "
+        r"TPR/Recall$\uparrow$ & FPR$\downarrow$ & TNR$\uparrow$ & FNR$\downarrow$ & Prec.$\uparrow$ & F1$\uparrow$ & "
         r"$t\bar t\,\uparrow$ & $h\to4b\,\uparrow$ \\"
     )
     lines.append(r"\midrule")
@@ -3159,11 +3214,11 @@ def write_paper_table(rows, out_csv: Path, out_tex: Path, target_pct, tol_pct):
 
         for key, nd in [
             ("MAE", 2),
-            ("P95_abs_err", 2),
+            ("P95_abs_err", 3),
             ("InBand", 3),
             ("UpFrac", 3),
             ("DownFrac", 3),
-            ("TPR", 3), ("FPR", 3), ("TNR", 3), ("FNR", 3), ("Precision", 3),
+            ("TPR", 3), ("FPR", 3), ("TNR", 3), ("FNR", 3), ("Precision", 3), ("F1", 3),
             ("tt", 3),
             ("h_to_4b", 3),
         ]:
@@ -3172,12 +3227,12 @@ def write_paper_table(rows, out_csv: Path, out_tex: Path, target_pct, tol_pct):
             row.append(s)
 
         # build line
-        # columns: Trigger, Method, MAE, P95, InBand, UpFrac, DownFrac, TPR, FPR, TNR, FNR, Precision, tt, h_to_4b
+        # columns: Trigger, Method, MAE, P95, InBand, UpFrac, DownFrac, TPR, FPR, TNR, FNR, Precision, F1, tt, h_to_4b
         lines.append(
             f"{row[0]} & {row[1]} & "
             f"{row[2]} & {row[3]} & {row[4]} & {row[5]} & {row[6]} & "
             f"{row[7]} & {row[8]} & {row[9]} & {row[10]} & "
-            f"{row[11]} & {row[12]} & {row[13]} \\\\"
+            f"{row[11]} & {row[12]} & {row[13]} & {row[14]}  \\\\"
         )
 
     lines.append(r"\bottomrule")
@@ -3190,6 +3245,102 @@ def write_paper_table(rows, out_csv: Path, out_tex: Path, target_pct, tol_pct):
     lines.append(r"\end{table}")
 
     out_tex.write_text("\n".join(lines) + "\n")
+def write_confusion_split_tables_tex(chunk_rows, out_tt_tex: Path, out_h4b_tex: Path):
+    """
+    Writes two LaTeX tables (micro-averaged over chunks by summing counts):
+      - out_tt_tex  : ttbar-as-signal vs background
+      - out_h4b_tex : h->4b-as-signal vs background
+
+    Uses summarize_confusion_from_chunk_rows_split(...).
+    """
+    trigger_order = ["HT", "AD"]
+    method_order  = ["Constant", "PID", "ADT", "DQN", "PPO", "GRPO", "GFPO-F", "GFPO-FR"]
+
+    def _fmt(x, nd=3):
+        if x is None:
+            return "nan"
+        try:
+            v = float(x)
+        except Exception:
+            return "nan"
+        if not np.isfinite(v):
+            return "nan"
+        return f"{v:.{nd}f}"
+
+    def _write_one(path: Path, *, which: str):
+        # which in {"tt", "h4b"}
+        lines = []
+        lines.append(r"\begin{table}[t]")
+        lines.append(r"\centering")
+        lines.append(r"\scriptsize")
+        lines.append(r"\setlength{\tabcolsep}{3.0pt}")
+        lines.append(r"\renewcommand{\arraystretch}{1.05}")
+
+        if which == "tt":
+            caption = r"Confusion / classification metrics treating $t\bar t$ as signal and background as negative."
+            colhdr  = r"TP$_{t\bar t}$ & FN$_{t\bar t}$ & FP & TN & TPR$_{t\bar t}$ & Prec.$_{t\bar t}$ & F1$_{t\bar t}$ & FPR"
+        else:
+            caption = r"Confusion / classification metrics treating $h\to4b$ as signal and background as negative."
+            colhdr  = r"TP$_{h\to4b}$ & FN$_{h\to4b}$ & FP & TN & TPR$_{h\to4b}$ & Prec.$_{h\to4b}$ & F1$_{h\to4b}$ & FPR"
+
+        lines.append(r"\begin{tabular}{llrrrrrrrr}")
+        lines.append(r"\toprule")
+        lines.append(r"Trigger & Method & " + colhdr + r" \\")
+        lines.append(r"\midrule")
+
+        cur_tr = None
+        for tr in trigger_order:
+            for m in method_order:
+                s = summarize_confusion_from_chunk_rows_split(chunk_rows, trigger=tr, method=m)
+                if not s:
+                    continue
+
+                if cur_tr is None:
+                    cur_tr = tr
+                elif tr != cur_tr:
+                    lines.append(r"\midrule")
+                    cur_tr = tr
+
+                if which == "tt":
+                    TP = s.get("TP_tt", None); FN = s.get("FN_tt", None)
+                    TPR = s.get("TPR_tt", np.nan)
+                    PRE = s.get("Precision_tt", np.nan)
+                    F1  = s.get("F1_tt", np.nan)
+                else:
+                    TP = s.get("TP_h4b", None); FN = s.get("FN_h4b", None)
+                    TPR = s.get("TPR_h4b", np.nan)
+                    PRE = s.get("Precision_h4b", np.nan)
+                    F1  = s.get("F1_h4b", np.nan)
+
+                FP = s.get("FP", None)
+                TN = s.get("TN", None)
+                FPR = s.get("FPR", np.nan)
+
+                # counts as ints, rates as floats
+                def _int_or_nan(v):
+                    return ("nan" if v is None else str(int(v)))
+
+                row = [
+                    tr, m,
+                    _int_or_nan(TP),
+                    _int_or_nan(FN),
+                    _int_or_nan(FP),
+                    _int_or_nan(TN),
+                    _fmt(TPR, 3),
+                    _fmt(PRE, 3),
+                    _fmt(F1,  3),
+                    _fmt(FPR, 3),
+                ]
+                lines.append(" & ".join(row) + r" \\")
+
+        lines.append(r"\bottomrule")
+        lines.append(r"\end{tabular}")
+        lines.append(r"\caption{" + caption + r"}")
+        lines.append(r"\end{table}")
+        path.write_text("\n".join(lines) + "\n")
+
+    _write_one(out_tt_tex, which="tt")
+    _write_one(out_h4b_tex, which="h4b")
 
 def write_signal_confusion_table(rows, *, out_csv: Path, out_tex: Path, which="tt"):
     """
@@ -3202,14 +3353,14 @@ def write_signal_confusion_table(rows, *, out_csv: Path, out_tex: Path, which="t
     out_csv.parent.mkdir(parents=True, exist_ok=True)
 
     if which == "tt":
-        TPk, FNk, TPRk, PREk = "TP_tt", "FN_tt", "TPR_tt", "Precision_tt"
+        TPk, FNk, TPRk, PREk, F1k = "TP_tt", "FN_tt", "TPR_tt", "Precision_tt", "F1_tt",
         sig_label = r"$t\bar t$"
     else:
-        TPk, FNk, TPRk, PREk = "TP_h4b", "FN_h4b", "TPR_h4b", "Precision_h4b"
+        TPk, FNk, TPRk, PREk, F1k = "TP_h4b", "FN_h4b", "TPR_h4b", "Precision_h4b", "F1_h4b"
         sig_label = r"$h\to 4b$"
 
     # ---------------- CSV ----------------
-    fieldnames = ["Trigger","Method","FP","TN","FPR", TPk, FNk, TPRk, PREk]
+    fieldnames = ["Trigger","Method","FP","TN","FPR", TPk, FNk, TPRk, PREk, F1k]
     with open(out_csv, "w", newline="") as f:
         w = csv.DictWriter(f, fieldnames=fieldnames)
         w.writeheader()
@@ -3301,7 +3452,7 @@ def build_paper_rows_from_chunk_rows(chunk_rows, *, target_pct, tol_pct):
     rows_out = []
 
     # NOTE: build_series_from_chunk_rows expects trigger labels that match chunk_rows.
-    # In your code, triggers in chunk_rows are typically "HT" and "AS" (AD trigger).
+    # triggers in chunk_rows are typically "HT" and "AS" (AD trigger).
     for trig in ["HT", "AD"]:
         series = build_series_from_chunk_rows(chunk_rows, trigger=trig)
         if not series:
@@ -4671,11 +4822,13 @@ def main():
                 cut=cut, bg_pct=bg, tt=tt, aa=aa,
                 occ_mid=occ, target=target, tol=tol,
                 tp=cm["tp"], fp=cm["fp"], tn=cm["tn"], fn=cm["fn"],
-                tpr=cm["tpr"], fpr=cm["fpr"], precision=cm["precision"],
+                tpr=cm["tpr"], fpr=cm["fpr"], precision=cm["precision"], f1=cm["f1"],
                 tp_tt=cm["tp_tt"], fn_tt=cm["fn_tt"],
                 tp_h4b=cm["tp_h4b"], fn_h4b=cm["fn_h4b"],
-            )   
-        
+                tpr_tt=cm["tpr_tt"], precision_tt=cm["precision_tt"], f1_tt=cm["f1_tt"],
+                tpr_h4b=cm["tpr_h4b"], precision_h4b=cm["precision_h4b"], f1_h4b=cm["f1_h4b"],
+            )
+
         # AD score distribution for this chunk
         h_as, _ = np.histogram(bas, bins=as_edges, density=True)
         as_hists.append(h_as)
@@ -4703,9 +4856,11 @@ def main():
                     cut=cut, bg_pct=bg, tt=tt, aa=aa,
                     occ_mid=occ, target=target, tol=tol,
                     tp=cm["tp"], fp=cm["fp"], tn=cm["tn"], fn=cm["fn"],
-                    tpr=cm["tpr"], fpr=cm["fpr"], precision=cm["precision"],
-                    tp_tt=cm["tp_tt"], fn_tt=cm["fn_tt"],
-                    tp_h4b=cm["tp_h4b"], fn_h4b=cm["fn_h4b"],
+                    tpr=cm["tpr"], fpr=cm["fpr"], precision=cm["precision"], f1=cm["f1"],
+                    tp_tt=cm["tp_tt"], fn_tt=cm["fn_tt"], precision_tt=cm["precision_tt"],
+                    f1_tt=cm["f1_tt"],
+                    tp_h4b=cm["tp_h4b"], fn_h4b=cm["fn_h4b"], precision_h4b=cm["precision_h4b"],
+                    f1_h4b=cm["f1_h4b"],
                 )
 
             tt_ht_const = Sing_Trigger(sht_tt, fixed_Ht_cut)
@@ -4785,21 +4940,26 @@ def main():
         target_pct=target,
         tol_pct=tol,
     )
-
-    rows_split = build_signal_confusion_rows_from_chunk_rows(chunk_rows, triggers=("HT","AD"))
-
-    write_signal_confusion_table(
-        rows_split,
-        out_csv=tables_dir / "confusion_tt.csv",
-        out_tex=tables_dir / "confusion_tt.tex",
-        which="tt",
+    write_confusion_split_tables_tex(
+        chunk_rows,
+        out_tt_tex=tables_dir / "confusion_tt.tex",
+        out_h4b_tex=tables_dir / "confusion_h4b.tex",
     )
-    write_signal_confusion_table(
-        rows_split,
-        out_csv=tables_dir / "confusion_h4b.csv",
-        out_tex=tables_dir / "confusion_h4b.tex",
-        which="h4b",
-    )   
+
+    # rows_split = build_signal_confusion_rows_from_chunk_rows(chunk_rows, triggers=("HT","AD"))
+
+    # write_signal_confusion_table(
+    #     rows_split,
+    #     out_csv=tables_dir / "confusion_tt.csv",
+    #     out_tex=tables_dir / "confusion_tt.tex",
+    #     which="tt",
+    # )
+    # write_signal_confusion_table(
+    #     rows_split,
+    #     out_csv=tables_dir / "confusion_h4b.csv",
+    #     out_tex=tables_dir / "confusion_h4b.tex",
+    #     which="h4b",
+    # )   
 
     tag = _run_tag(args, target, tol)
 
