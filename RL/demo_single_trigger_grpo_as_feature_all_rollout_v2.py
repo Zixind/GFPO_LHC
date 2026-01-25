@@ -2593,6 +2593,9 @@ def _summarize_window(rows, *, target_pct, tol_pct):
 
     inband_mask = abs_err_pct <= float(tol_pct)
 
+    tt_inband = tt[inband_mask]
+    aa_inband = aa[inband_mask]
+
     # in kHz space
     target_khz = float(target_pct) * RATE_SCALE_KHZ
     abs_err_khz = np.abs(bg_khz - target_khz)
@@ -2604,7 +2607,6 @@ def _summarize_window(rows, *, target_pct, tol_pct):
 
     dc = np.diff(cut) if cut.size >= 2 else np.array([], dtype=np.float64)
     step_rms = float(np.sqrt(np.mean(dc * dc))) if dc.size else 0.0
-
 
     def _sum_int(key):
         vals = [r.get(key, None) for r in rows]
@@ -3936,10 +3938,11 @@ def main():
 
     # GRPO kwargs
     ap.add_argument("--train-every", type=int, default=50)
-    ap.add_argument("--temperature", type=float, default=1.0)
+    ap.add_argument("--ht-temperature", type=float, default=1.0) 
+    ap.add_argument("--as-temperature", type=float, default=1.0)
     ap.add_argument("--beta-kl", type=float, default=0.02)
     ap.add_argument("--ent-coef", type=float, default=0.01)
-    ap.add_argument("--lr", type=float, default=2e-4) #originally 3e-4
+    ap.add_argument("--grpo-lr", type=float, default=2e-4) #originally 3e-4
     ap.add_argument("--band-mult-ht", type=float, default=1.0,
                 help="HT candidate filter band: |bg-target| <= band-mult * tol (1.0 = exact tolerance)")
     ap.add_argument("--band-mult-as", type=float, default=1.0,
@@ -3954,8 +3957,11 @@ def main():
     ap.add_argument("--target", type=float, default=0.25)   # percent
     ap.add_argument("--tol", type=float, default=0.025,     # percent  (0.025% -> ±10kHz band)
                     help="tolerance in percent units; 0.025 corresponds to [90,110] kHz when target=0.25%")
-    ap.add_argument("--alpha", type=float, default=0.4)
-    ap.add_argument("--beta", type=float, default=0.2)
+    ap.add_argument("--alpha", type=float, default=0.3) #alpha ttbar focus
+    ap.add_argument("--beta", type=float, default=0.2, help="beta moving penalty weight") 
+    ap.add_argument("--violation-penalty", type=float, default=5.0,
+                    help="penalty weight for bg rate outside of target±tol band")
+
 
     # optional stabilization (AD-specific)
     ap.add_argument("--occ-pen", type=float, default=0.0,
@@ -4109,7 +4115,7 @@ def main():
 
     # fixed cut from calibration window
     win_lo = min(start_event, N - 1)
-    win_hi = min(start_event + (100000 if args.control == "MC" else 10000), N)
+    win_hi = min(start_event + (100000 if args.control == "MC" else 40000), N) #real data 200000 - 240000
     fixed_AS_cut = float(np.percentile(Bas[win_lo:win_hi], 99.75))
     if args.run_ht:
         fixed_Ht_cut = float(np.percentile(Bht[win_lo:win_hi], 99.75))
@@ -4190,7 +4196,7 @@ def main():
 
     # GRPO agent AS
     cfg = GRPOConfig(
-        lr=args.lr,
+        lr=args.grpo_lr,
         beta_kl=args.beta_kl,
         ent_coef=args.ent_coef,
         device="cpu",
@@ -4203,15 +4209,15 @@ def main():
         target=target,
         tol=tol,
         mode="lex",        # "lex" default; "lag" if adaptive lambda
-        mix=0.75, #increase for tt
+        mix=args.alpha, #increase for tt
         alpha_sig=1.0,
-        beta_move=0.02,
+        beta_move=args.beta,
         gamma_stab=0.25,
-        k_violate=5.0,
+        k_violate=args.violation_penalty,
         w_occ=float(args.occ_pen)
     ))
     gfpo_cfg_as = GRPOConfig(
-        lr=args.lr,
+        lr=args.grpo_lr,
         beta_kl=args.beta_kl,
         ent_coef=args.ent_coef,
         device="cpu",
@@ -4224,11 +4230,11 @@ def main():
         target=target,
         tol=tol,
         mode="lex",        # "lex" default; "lag" if adaptive lambda
-        mix=0.75, #increase for tt
+        mix=args.alpha, #increase for tt
         alpha_sig=1.0,
-        beta_move=0.02,
+        beta_move=args.beta,
         gamma_stab=0.25,
-        k_violate=5.0,
+        k_violate=args.violation_penalty,
         w_occ=float(args.occ_pen)
     ))
 
@@ -4275,7 +4281,7 @@ def main():
         target=target, tol=tol,
         eps_min=args.dqn_eps_min, eps_decay=args.dqn_eps_decay,
         train_steps_per_micro=args.dqn_train_steps_per_micro,
-        alpha=args.alpha, beta=args.beta, train = False #roll out on real data
+        alpha=args.alpha, beta=args.beta
             ))
     
     # --- ADT baseline (AS): DQN + action-hold + end-of-chunk updates ---
@@ -4318,7 +4324,7 @@ def main():
         agent=agent, deltas=AS_DELTAS, step=AS_STEP, max_delta=MAX_DELTA_AS,
         as_mid=as_mid, as_span=as_span, near_widths=near_widths_as, K=K,
         target=target, tol=tol,
-        train_every=args.train_every, temperature=args.temperature,
+        train_every=args.train_every, temperature=args.as_temperature,
         group_size_keep=args.group_size_keep,
         train = False
         ))
@@ -4330,11 +4336,12 @@ def main():
         load_agent_bundle_into(gfpo_f_as, Path("outputs/demo_sing_grpo_as_feature_all_MC/models_mc/AD/GFPO-F.pt"), load_optim=False)
         controllers_as.append(GFPOCtrl(
         "GFPO-F", fixed_AS_cut, as_lo, as_hi,
-        agent=gfpo_f_as,
+        agent=GRPOAgent(seq_len=K, feat_dim=feat_dim_as, n_actions=len(AS_DELTAS), cfg=cfg, seed=SEED,
+                        reward_cfg=agent.reward_cfg),
         deltas=AS_DELTAS, step=AS_STEP, max_delta=MAX_DELTA_AS,
         as_mid=as_mid, as_span=as_span, near_widths=near_widths_as, K=K,
         target=target, tol=tol,
-        train_every=args.train_every, temperature=args.temperature,
+        train_every=args.train_every, temperature=args.as_temperature,
         gfpo_filter="abs_err_topk",
         group_size_sample=args.group_size_sample, group_size_keep=args.group_size_keep,
         feas_mult=args.gfpo_feas_mult, mix=args.gfpo_mix,
@@ -4347,15 +4354,17 @@ def main():
                         reward_cfg=agent.reward_cfg)
         controllers_as.append(GFPOCtrl(
         "GFPO-FR", fixed_AS_cut, as_lo, as_hi,
-        agent=gfpo_fr_as,
+        agent=GRPOAgent(seq_len=K, feat_dim=feat_dim_as, n_actions=len(AS_DELTAS), cfg=cfg, seed=SEED,
+                        reward_cfg=agent.reward_cfg),
         deltas=AS_DELTAS, step=AS_STEP, max_delta=MAX_DELTA_AS,
         as_mid=as_mid, as_span=as_span, near_widths=near_widths_as, K=K,
         target=target, tol=tol,
-        train_every=args.train_every, temperature=args.temperature,
+        train_every=args.train_every, temperature=args.as_temperature,
         gfpo_filter="feasible_first_sig",
         group_size_sample=args.group_size_sample, group_size_keep=args.group_size_keep,
         feas_mult=args.gfpo_feas_mult, mix=args.gfpo_mix,
-        band_mult=args.band_mult_as, sig_bonus=args.sig_bonus_as
+        band_mult=args.band_mult_as, sig_bonus=args.sig_bonus_as,
+        train = False
         ))
 
     if "ppo" in BASELINES:
@@ -4497,7 +4506,7 @@ def main():
         
         if "grpo" in BASELINES:
             cfg_ht = GRPOConfig(
-                lr=args.lr, beta_kl=args.beta_kl, ent_coef=args.ent_coef,
+                lr=args.grpo_lr, beta_kl=args.beta_kl, ent_coef=args.ent_coef,
                 device="cpu", batch_size=256, train_epochs=2, ref_update_interval=200,
             )
             agent_ht = GRPOAgent(
@@ -4521,7 +4530,7 @@ def main():
             agent=agent_ht, deltas=HT_DELTAS, step=HT_STEP, max_delta=MAX_DELTA_HT,
             ht_mid=ht_mid, ht_span=ht_span, near_widths=near_widths_ht, K=K,
             target=target, tol=tol,
-            train_every=args.train_every, temperature=args.temperature,
+            train_every=args.train_every, temperature=args.ht_temperature,
             group_size_keep=args.group_size_keep
             ))
 
@@ -4537,11 +4546,12 @@ def main():
                 deltas=HT_DELTAS, step=HT_STEP, max_delta=MAX_DELTA_HT,
                 ht_mid=ht_mid, ht_span=ht_span, near_widths=near_widths_ht, K=K,
                 target=target, tol=tol,
-                train_every=args.train_every, temperature=args.temperature,
+                train_every=args.train_every, temperature=args.ht_temperature,
                 gfpo_filter="abs_err_topk",
                 group_size_sample=args.group_size_sample, group_size_keep=args.group_size_keep,
                 feas_mult=args.gfpo_feas_mult, mix=args.gfpo_mix,
-                band_mult=args.band_mult_ht, sig_bonus=args.sig_bonus
+                band_mult=args.band_mult_ht, sig_bonus=args.sig_bonus,
+                train = False
                 ))
 
         if "gfpo_fr" in BASELINES:
@@ -4554,11 +4564,12 @@ def main():
                 deltas=HT_DELTAS, step=HT_STEP, max_delta=MAX_DELTA_HT,
                 ht_mid=ht_mid, ht_span=ht_span, near_widths=near_widths_ht, K=K,
                 target=target, tol=tol,
-                train_every=args.train_every, temperature=args.temperature,
+                train_every=args.train_every, temperature=args.ht_temperature,
                 gfpo_filter="feasible_first_sig",
                 group_size_sample=args.group_size_sample, group_size_keep=args.group_size_keep,
                 feas_mult=args.gfpo_feas_mult, mix=args.gfpo_mix,
-                band_mult=args.band_mult_ht, sig_bonus=args.sig_bonus
+                band_mult=args.band_mult_ht, sig_bonus=args.sig_bonus,
+                train = False
             ))
     
         
@@ -4606,7 +4617,7 @@ def main():
 
     if args.run_ht:
         gfpo_cfg_ht = GRPOConfig(
-            lr=args.lr, beta_kl=args.beta_kl, ent_coef=args.ent_coef,
+            lr=args.grpo_lr, beta_kl=args.beta_kl, ent_coef=args.ent_coef,
             device="cpu", batch_size=256, train_epochs=2, ref_update_interval=200,
         )
 
@@ -4617,11 +4628,11 @@ def main():
                 target=target,
                 tol=tol,
                 mode="lex",        # "lex" recommended
-                mix=0.75,
+                mix=args.alpha, #increase for tt
                 alpha_sig=1.0,
-                beta_move=0.02,
+                beta_move=args.beta,
                 gamma_stab=0.25,
-                k_violate=5.0,
+                k_violate=args.violation_penalty,
                 w_occ=float(args.occ_pen)
             )
         )
@@ -4712,11 +4723,11 @@ def main():
         bas = Bas[idx]
         bnpv = Bnpv[idx]
 
-        bas_chunk = bas[I:end]
+        # bas_chunk = bas[I:end]
         
         if args.run_ht:
             bht = Bht[idx]
-            bht_chunk = bht[I:end]
+            # bht_chunk = bht[I:end]
         # signals for the chunk
         if matched_by_index:
             end_sig = min(end, len(Tas), len(Aas), len(Tnpv), len(Anpv))
@@ -4839,8 +4850,8 @@ def main():
         # ============================
         # CHUNK-LEVEL logging (ONCE per chunk)
         # ============================
-        
         logs_by_method = {}
+        # PID chunk update happens once per chunk
         # Now log chunk metrics for ALL methods
         for ctrl in controllers_as:
             cut = ctrl.cut_value()
@@ -4850,7 +4861,6 @@ def main():
             occ = float(near_occupancy(bas, cut, near_widths_as)[1])
 
             cm = confusion_counts_at_cut_split(bas_j, sas_tt, sas_aa, cut)
-
             log_chunk_stats(
                 chunk=t, trigger="AD", method=ctrl.name,
                 cut=cut, bg_pct=bg, tt=tt, aa=aa,
@@ -4862,7 +4872,7 @@ def main():
                 tpr_tt=cm["tpr_tt"], precision_tt=cm["precision_tt"], f1_tt=cm["f1_tt"],
                 tpr_h4b=cm["tpr_h4b"], precision_h4b=cm["precision_h4b"], f1_h4b=cm["f1_h4b"],
             )   
-            ctrl.end_chunk(chunk=t, bas_j=bas_j) 
+            ctrl.end_chunk(chunk=t, bas_j=bas) 
 
         # AD score distribution for this chunk
         h_as, _ = np.histogram(bas, bins=as_edges, density=True)
@@ -4891,7 +4901,7 @@ def main():
                     tp_h4b=cm["tp_h4b"], fn_h4b=cm["fn_h4b"], precision_h4b=cm["precision_h4b"],
                     f1_h4b=cm["f1_h4b"],
                 )
-                ctrl.end_chunk(chunk=t, bht_j=bht_j)   # HT PID
+                ctrl.end_chunk(chunk=t, bht_j=bht)   # HT PID
 
                 
 
@@ -4924,13 +4934,10 @@ def main():
     if args.run_ht:
         ht_series = build_series_from_chunk_rows(chunk_rows, trigger="HT")
         
-
-
     target_khz = target * RATE_SCALE_KHZ
     tol_khz = tol * RATE_SCALE_KHZ
     upper_tol_khz = target_khz + tol_khz
     lower_tol_khz = target_khz - tol_khz
-
 
     # ----------------------------- Advantage distribution plots -----------------------------
     # Inspired by: https://arxiv.org/pdf/2504.08837 VL rethinker
@@ -4939,7 +4946,6 @@ def main():
 
     write_chunk_stats_csv(tables_dir / "chunk_stats.csv")
 
-    as_series = build_series_from_chunk_rows(chunk_rows, trigger="AD")
     make_original_plots_for_trigger(
         as_series,
         trigger_name="AD",
@@ -5071,6 +5077,14 @@ def main():
             ad = eff_ad.get(m, {}).get("h_to_4b", np.nan)
             ht = eff_ht.get(m, {}).get("h_to_4b", np.nan)
             print(f"{m:<9}  {ad:8.4f}  {ht:8.4f}")
+        # Print a quick comparison table (ttbar)
+        print("\nMean in-band ttbar efficiency (AD vs HT)")
+        print("Method     AD(ttbar)   HT(ttbar)")
+        for m in PLOT_METHODS:
+            ad = eff_ad.get(m, {}).get("tt", np.nan)
+            ht = eff_ht.get(m, {}).get("tt", np.nan)
+            print(f"{m:<9}  {ad:8.4f}  {ht:8.4f}")
+
         # ttbar plot (grouped by trigger)
         plot_inband_eff_grouped_by_trigger(
             eff_ad, eff_ht,
