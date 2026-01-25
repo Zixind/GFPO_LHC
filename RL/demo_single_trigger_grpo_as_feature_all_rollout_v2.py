@@ -277,7 +277,6 @@ def plot_early_abs_err_hist(grpo_ae, gfpo_ae, *, title, outpath, run_label):
     save_png(fig, str(outpath))
     plt.close(fig)
 
-# PLOT_METHODS = ["Constant", "PID", "ADT", "DQN", "GRPO", "GFPO-F", "GFPO-FR"]
 PLOT_METHODS = ["Constant", "PID", "ADT", "DQN", "PPO", "GRPO", "GFPO-F", "GFPO-FR"]
 
 def select_plot_methods(d):
@@ -370,11 +369,25 @@ class PIDCtrl(BaseCtrl):
         self.cut = float(init_cut)
         self.err = 0.0
         self.lo, self.hi = float(lo), float(hi)
-    def step_chunk(self, bas_chunk):
-        bg = float(Sing_Trigger(bas_chunk, self.cut))
-        self.cut, self.err = PD_controller2(bg, self.err, self.cut)
-        self.cut = float(np.clip(self.cut, self.lo, self.hi))
-    def cut_value(self): return self.cut
+
+    def cut_value(self):
+        return self.cut
+
+    def step_micro(self, *, micro_global: int, **kwargs) -> CtrlOut:
+        # No-op inside chunk (cut held constant)
+        return CtrlOut(micro_global=micro_global)
+
+    def end_chunk(self, *, chunk: int, bas_j=None, bas_chunk=None, **kwargs):
+        # Accept either bas_j (per-chunk array) or bas_chunk (older name)
+        scores = bas_j if bas_j is not None else bas_chunk
+        if scores is None:
+            return
+
+        bg = float(Sing_Trigger(scores, self.cut))
+        cut_next, err_next = PD_controller2(bg, self.err, self.cut)  # AD/AS uses PD_controller2
+        self.cut = float(cut_next) 
+        self.err = float(err_next)
+
 
 class PIDCtrlHT(BaseCtrl):
     def __init__(self, name, init_cut, lo, hi):
@@ -383,13 +396,22 @@ class PIDCtrlHT(BaseCtrl):
         self.err = 0.0
         self.lo, self.hi = float(lo), float(hi)
 
-    def step_chunk(self, bht_chunk):
-        bg = float(Sing_Trigger(bht_chunk, self.cut))
-        self.cut, self.err = PD_controller1(bg, self.err, self.cut)   # HT uses PD_controller1
-        self.cut = float(np.clip(self.cut, self.lo, self.hi))
-
-    def cut_value(self): 
+    def cut_value(self):
         return self.cut
+
+    def step_micro(self, *, chunk: int, micro_global: int, **kwargs) -> CtrlOut:
+        return CtrlOut(micro_global=micro_global)
+
+    def end_chunk(self, *, chunk: int, bht_j=None, bht_chunk=None, **kwargs):
+        scores = bht_j if bht_j is not None else bht_chunk
+        if scores is None:
+            return
+
+        bg = float(Sing_Trigger(scores, self.cut))
+        cut_next, err_next = PD_controller1(bg, self.err, self.cut)  # HT uses PD_controller1
+        self.cut = float(cut_next) 
+        self.err = float(err_next)
+
     
 class DQNCtrl(BaseCtrl):
     def __init__(self, name, init_cut, lo, hi, *, agent, deltas, step, max_delta, as_mid, as_span,
@@ -1742,134 +1764,6 @@ class GRPOCtrlHT(BaseCtrl):
         return CtrlOut(micro_global=micro_global)
 
 
-# class GRPOFilterCtrlHT(GRPOCtrlHT):
-#     """
-#     HT version of GRPOFilterCtrl.
-#     """
-#     def __init__(self, *args, band_mult=1.0, group_size_sample=32, group_size_keep=16, **kwargs):
-#         super().__init__(*args, **kwargs)
-#         self.band_mult = float(band_mult)
-#         self.G_sample = int(group_size_sample)
-#         self.G_keep = int(group_size_keep)
-
-#     def step_micro(self, *, chunk: int, bht_w, bnpv_w, bht_j, sht_tt, sht_aa, micro_global, grpo_samples=None):
-#         bg_before = float(Sing_Trigger(bht_j, self.cut))
-#         if self.prev_bg is None:
-#             self.prev_bg = bg_before
-
-#         obs = self._obs(bht_w, bnpv_w, bht_j, bg_before)
-#         acts, old_logps = self.agent.sample_group_actions(obs, group_size=self.G_sample, temperature=self.temperature)
-
-#         occ_mid = float(near_occupancy(bht_j, self.cut, self.near_widths)[1])
-
-#         cand_r = np.zeros(self.G_sample, np.float32)
-#         cand_bg = np.zeros(self.G_sample, np.float32)
-#         cand_tt = np.zeros(self.G_sample, np.float32)
-#         cand_aa = np.zeros(self.G_sample, np.float32)
-#         cand_cut = np.zeros(self.G_sample, np.float32)
-
-#         for k in range(self.G_sample):
-#             a = int(acts[k])
-#             dlt = float(self.deltas[a] * self.step)
-#             cut_next = float(np.clip(self.cut + dlt, self.lo, self.hi))
-#             bg_after = float(Sing_Trigger(bht_j, cut_next))
-#             tt_after = float(Sing_Trigger(sht_tt, cut_next))
-#             aa_after = float(Sing_Trigger(sht_aa, cut_next))
-#             r = float(self.agent.compute_reward(
-#                 bg_after=bg_after, tt_after=tt_after, aa_after=aa_after,
-#                 delta_applied=dlt, max_delta=self.max_delta,
-#                 prev_bg=bg_before, occ_mid=occ_mid, update_dual=False
-#             ))
-#             cand_r[k] = r
-#             cand_bg[k] = bg_after
-#             cand_tt[k] = tt_after
-#             cand_aa[k] = aa_after
-#             cand_cut[k] = cut_next
-
-#         abs_err = np.abs(cand_bg - self.target)
-#         inband = abs_err <= (self.band_mult * self.tol)
-#         keep = np.where(inband)[0]
-#         if keep.size == 0:
-#             keep = np.array([int(np.argmin(abs_err))], dtype=np.int64)
-
-#         if keep.size > self.G_keep:
-#             keep = keep[np.argsort(-cand_r[keep])[:self.G_keep]]
-
-#         keep = keep.astype(np.int64)
-#         k_best = int(keep[np.argmax(cand_r[keep])])
-
-#         if grpo_samples is not None:
-#             keep_set = set(int(x) for x in keep.tolist())
-#             for k in range(self.G_sample):
-#                 a = int(acts[k])
-#                 dlt = float(self.deltas[a] * self.step)
-#                 log_grpo_row(
-#                     grpo_samples, method=self.name, trigger="HT",
-#                     chunk=chunk, micro=self.micro_counter, micro_global=micro_global,
-#                     phase="candidate", k=k, a=a, delta=dlt, step=self.step,
-#                     cut_before=self.cut, cut_next=float(cand_cut[k]),
-#                     cut_lo=self.lo, cut_hi=self.hi,
-#                     bg_before=bg_before, bg_after=float(cand_bg[k]),
-#                     tt_after=float(cand_tt[k]), aa_after=float(cand_aa[k]),
-#                     occ_mid=occ_mid,
-#                     reward_raw=float(cand_r[k]), executed=0, shielded=0,
-#                     kept=int(k in keep_set)
-#                 )
-#                 micro_global += 1
-
-#         self.agent.store_group(
-#             obs=obs,
-#             actions=acts[keep],
-#             logp=old_logps[keep],
-#             rewards=cand_r[keep],
-#             baseline="mean"
-#         )
-
-#         a_exec = int(acts[k_best])
-#         d_exec = float(self.deltas[a_exec] * self.step)
-#         sd = shield_delta(bg_before, self.target, self.tol, self.max_delta)
-#         shielded = (sd is not None)
-#         if sd is not None:
-#             d_exec = float(sd)
-
-#         cut_next = float(np.clip(self.cut + d_exec, self.lo, self.hi))
-#         bg_after = float(Sing_Trigger(bht_j, cut_next))
-#         tt_after = float(Sing_Trigger(sht_tt, cut_next))
-#         aa_after = float(Sing_Trigger(sht_aa, cut_next))
-
-#         r_exec = float(self.agent.compute_reward(
-#             bg_after=bg_after, tt_after=tt_after, aa_after=aa_after,
-#             delta_applied=d_exec, max_delta=self.max_delta,
-#             prev_bg=bg_before, occ_mid=occ_mid, update_dual=True
-#         ))
-
-#         if grpo_samples is not None:
-#             log_grpo_row(
-#                 grpo_samples, method=self.name, trigger="HT",
-#                 chunk=chunk, micro=self.micro_counter, micro_global=micro_global,
-#                 phase="executed", k=int(k_best), a=a_exec, delta=d_exec, step=self.step,
-#                 cut_before=self.cut, cut_next=cut_next,
-#                 cut_lo=self.lo, cut_hi=self.hi,
-#                 bg_before=bg_before, bg_after=bg_after,
-#                 tt_after=tt_after, aa_after=aa_after,
-#                 occ_mid=occ_mid,
-#                 reward_best_sample=float(cand_r[k_best]),
-#                 reward_exec=r_exec,
-#                 executed=1, shielded=int(shielded), kept=1
-#             )
-#         micro_global += 1
-
-#         self.cut = cut_next
-#         self.prev_bg = bg_after
-#         self.last_delta = d_exec
-#         self.micro_counter += 1
-
-#         if (self.micro_counter % self.train_every) == 0:
-#             _ = self.agent.update()
-
-#         return CtrlOut(micro_global=micro_global)
-
-
 class GFPOCtrlHT(GRPOCtrlHT):
     """
     HT version of GFPOCtrl.
@@ -2551,35 +2445,117 @@ def log_grpo_row(rows, *, method="GRPO",
     })
 
 
-def log_chunk_stats(*, chunk, trigger, method, cut, bg_pct, tt, aa, occ_mid, target, tol):
+def log_chunk_stats(*, chunk, trigger, method, cut, bg_pct, tt, aa, occ_mid, target, tol,
+                    tp=None, fp=None, tn=None, fn=None,
+                    tpr=None, fpr=None, precision=None, f1=None,
+                    tp_tt = None, fn_tt = None,
+                    tp_h4b = None, fn_h4b = None,
+                    tpr_tt=None, precision_tt=None, f1_tt=None,
+                    tpr_h4b=None, precision_h4b=None, f1_h4b=None):
+    # we only care about in band rates for signal efficiency
     bg_khz = float(bg_pct) * RATE_SCALE_KHZ
     target_khz = float(target) * RATE_SCALE_KHZ
     tol_khz = float(tol) * RATE_SCALE_KHZ
     abs_err_khz = abs(bg_khz - target_khz)
     inband = int(abs(float(bg_pct) - float(target)) <= float(tol))
+    
+    # mask signal efficiencies by inband
+    tt_inband = (None if tt is None else (float(tt) if inband else None))
+    aa_inband = (None if aa is None else (float(aa) if inband else None))
+
+    def mask_if_outband(x, cast=float):
+        """Return cast(x) if inband else None. Preserves 0.0 correctly."""
+        if x is None:
+            return None
+        return cast(x) if inband else None
 
     chunk_rows.append(dict(
+        # always log control / rate stats
         chunk=int(chunk),
-        trigger=str(trigger),     # "AS" or "HT"
+        trigger=str(trigger),
         method=str(method),
         cut=float(cut),
         bg_pct=float(bg_pct),
         bg_khz=float(bg_khz),
         abs_err_khz=float(abs_err_khz),
         inband=int(inband),
-        tt=float(tt),
-        aa=float(aa),
         occ_mid=float(occ_mid),
+
+        # ONLY log signal stats if inband
+        tt=mask_if_outband(tt, float),
+        aa=mask_if_outband(aa, float),
+
+        tp=mask_if_outband(tp, int),
+        fp=mask_if_outband(fp, int),
+        tn=mask_if_outband(tn, int),
+        fn=mask_if_outband(fn, int),
+
+        tpr=mask_if_outband(tpr, float),
+        fpr=mask_if_outband(fpr, float),
+        precision=mask_if_outband(precision, float),
+        f1=mask_if_outband(f1, float),
+
+        tp_tt=mask_if_outband(tp_tt, int),
+        fn_tt=mask_if_outband(fn_tt, int),
+        tp_h4b=mask_if_outband(tp_h4b, int),
+        fn_h4b=mask_if_outband(fn_h4b, int),
+
+        tpr_tt=mask_if_outband(tpr_tt, float),
+        precision_tt=mask_if_outband(precision_tt, float),
+        f1_tt=mask_if_outband(f1_tt, float),
+
+        tpr_h4b=mask_if_outband(tpr_h4b, float),
+        precision_h4b=mask_if_outband(precision_h4b, float),
+        f1_h4b=mask_if_outband(f1_h4b, float),
     ))
+    # chunk_rows.append(dict(
+    #     chunk=int(chunk),
+    #     trigger=str(trigger),     # "AS" or "HT"
+    #     method=str(method),
+    #     cut=float(cut),
+    #     bg_pct=float(bg_pct),
+    #     bg_khz=float(bg_khz),
+    #     abs_err_khz=float(abs_err_khz),
+    #     inband=int(inband),
+    #     tt=float(tt_inband) if tt_inband else None, #make it inband ttbar
+    #     aa=float(aa_inband) if aa_inband else None, #make it inband aa
+    #     occ_mid=float(occ_mid),
+
+    #     tp=(None if tp is None else int(tp)),
+    #     fp=(None if fp is None else int(fp)),
+    #     tn=(None if tn is None else int(tn)),
+    #     fn=(None if fn is None else int(fn)),
+    #     tpr=(None if tpr is None else float(tpr)),
+    #     fpr=(None if fpr is None else float(fpr)),
+    #     precision=(None if precision is None else float(precision)),
+    #     f1=(None if f1 is None else float(f1)),
+    #     tp_tt = (None if tp_tt is None else int(tp_tt)),
+    #     fn_tt = (None if fn_tt is None else int(fn_tt)),
+    #     tp_h4b = (None if tp_h4b is None else int(tp_h4b)),
+    #     fn_h4b = (None if fn_h4b is None else int(fn_h4b)),
+
+    #     tpr_tt=(None if tpr_tt is None else float(tpr_tt)),
+    #     precision_tt=(None if precision_tt is None else float(precision_tt)),
+    #     f1_tt=(None if f1_tt is None else float(f1_tt)),
+
+    #     tpr_h4b=(None if tpr_h4b is None else float(tpr_h4b)),
+    #     precision_h4b=(None if precision_h4b is None else float(precision_h4b)),
+    #     f1_h4b=(None if f1_h4b is None else float(f1_h4b)),
+    # ))
+
 
 def write_chunk_stats_csv(path: Path):
     if not chunk_rows:
         return
-    cols = ["chunk","trigger","method","cut","bg_pct","bg_khz","abs_err_khz","inband","tt","aa","occ_mid"]
+    cols = ["chunk","trigger","method","cut","bg_pct","bg_khz","abs_err_khz","inband","tt","aa","occ_mid",
+            "tp","fp","tn","fn","tpr","fpr","precision","f1","tp_tt","fn_tt","tp_h4b","fn_h4b",
+            "tpr_tt","precision_tt","f1_tt",
+            "tpr_h4b","precision_h4b","f1_h4b"]
     with open(path, "w", newline="") as f:
         w = csv.DictWriter(f, fieldnames=cols)
         w.writeheader()
         w.writerows(chunk_rows)
+
 def _safe_mean(x):
     x = np.asarray(x, dtype=np.float64)
     x = x[np.isfinite(x)]
@@ -2629,6 +2605,26 @@ def _summarize_window(rows, *, target_pct, tol_pct):
     dc = np.diff(cut) if cut.size >= 2 else np.array([], dtype=np.float64)
     step_rms = float(np.sqrt(np.mean(dc * dc))) if dc.size else 0.0
 
+
+    def _sum_int(key):
+        vals = [r.get(key, None) for r in rows]
+        vals = [int(v) for v in vals if v is not None]
+        return int(np.sum(vals)) if vals else None
+
+    tp_sum = _sum_int("tp")
+    fp_sum = _sum_int("fp")
+    tn_sum = _sum_int("tn")
+    fn_sum = _sum_int("fn")
+
+    nb = (fp_sum or 0) + (tn_sum or 0)
+    ns = (tp_sum or 0) + (fn_sum or 0)
+    tpr = (tp_sum / ns) if (tp_sum is not None and ns > 0) else np.nan
+    fpr = (fp_sum / nb) if (fp_sum is not None and nb > 0) else np.nan
+    
+    prec = (tp_sum / (tp_sum + fp_sum)) if (tp_sum is not None and fp_sum is not None and (tp_sum + fp_sum) > 0) else np.nan
+
+    f1_macro = _safe_mean([r.get("f1", np.nan) for r in rows])
+
     return dict(
         n=int(len(rows)),
         bg_khz_mean=_safe_mean(bg_khz),
@@ -2643,6 +2639,11 @@ def _summarize_window(rows, *, target_pct, tol_pct):
         occ_mean=_safe_mean(occ),
         tt_inband=_safe_mean(tt[inband_mask]) if np.any(inband_mask) else np.nan,
         aa_inband=_safe_mean(aa[inband_mask]) if np.any(inband_mask) else np.nan,
+        TP=tp_sum, FP=fp_sum, TN=tn_sum, FN=fn_sum,
+        TPR=float(tpr) if np.isfinite(tpr) else np.nan,
+        FPR=float(fpr) if np.isfinite(fpr) else np.nan,
+        Precision=float(prec) if np.isfinite(prec) else np.nan,
+        F1=float(f1_macro) if np.isfinite(f1_macro) else np.nan,  
     )
 
 def print_every_k_chunk_stats(chunk_rows, *, trigger, c_hi, k, target_pct, tol_pct):
@@ -2660,12 +2661,25 @@ def print_every_k_chunk_stats(chunk_rows, *, trigger, c_hi, k, target_pct, tol_p
     # enforce paper plot order
     ordered = [m for m in PLOT_METHODS if m in by_method]
 
+    
     print(f"\n[{trigger}] Window chunks {c_lo}..{c_hi} (K={k})")
-    print("  Method    | InBand  MAE(kHz)  P95|e|(kHz)  UpFrac  DownFrac  ViolMag(kHz)  StepRMS  tt(inband)  aa(inband)  bg_mean(kHz)  cut_mean  occ_mean")
-    print("  ----------+-------------------------------------------------------------------------------------------------------------------------------")
+    print("  Method    | InBand  MAE(kHz)  P95|e|(kHz)  UpFrac  DownFrac  ViolMag(kHz)  StepRMS  tt(inband)  aa(inband)  bg_mean(kHz)  cut_mean  occ_mean | TPR FPR Precision F1")
+    print("  ----------+-------------------------------------------------------------------------------------------------------------------------------------------------")
 
     for m in ordered:
         s = _summarize_window(by_method[m], target_pct=target_pct, tol_pct=tol_pct)
+        rows.append({
+            "Trigger": trigger,
+            "Method":  m,
+            "MAE": s["mae_khz"],
+            "P95_abs_err": s["p95_abs_err_khz"],
+            "InBand": s["inband"],
+            "UpFrac": s["upfrac"],
+            "DownFrac": s["downfrac"],
+            "tt": s["tt_inband"],
+            "h_to_4b": s["aa_inband"],
+            "TP": s["TP"], "FP": s["FP"], "TN": s["TN"], "FN": s["FN"], "TPR": s["TPR"], "FPR": s["FPR"], "Precision": s["Precision"], "F1": s["F1"],
+        })
         if s is None:
             continue
 
@@ -2676,6 +2690,7 @@ def print_every_k_chunk_stats(chunk_rows, *, trigger, c_hi, k, target_pct, tol_p
 
         print(
             f"  {m:<9} |"
+            f" (n={s['n']}) |"
             f"{f(s['inband'], w=7, nd=3)}"
             f"{f(s['mae_khz'], w=10, nd=2)}"
             f"{f(s['p95_abs_err_khz'], w=13, nd=2)}"
@@ -2687,7 +2702,11 @@ def print_every_k_chunk_stats(chunk_rows, *, trigger, c_hi, k, target_pct, tol_p
             f"{f(s['aa_inband'], w=11, nd=3)}"
             f"{f(s['bg_khz_mean'], w=13, nd=1)}"
             f"{f(s['cut_mean'], w=9, nd=3)}"
-            f"{f(s['occ_mean'], w=9, nd=3)}"
+            f"{f(s['occ_mean'], w=9, nd=3)}",
+            f"{f(s['TPR'], w=9, nd=3)}",
+            f"{f(s['FPR'], w=9, nd=3)}",
+            f"{f(s['Precision'], w=11, nd=3)}",
+            f"{f(s['F1'], w=8, nd=3)}",     
         )
 
 def ecdf(x):
@@ -2888,8 +2907,185 @@ def make_gfpo_f_vs_fr_diagnostics(grpo_samples, *, trigger, target, tol, mix, gr
         run_label=run_label
     )
 
+def confusion_counts_at_cut_split(bg_scores, tt_scores, h4b_scores, cut):
+    s_b   = np.asarray(bg_scores,  dtype=np.float32)
+    s_tt  = np.asarray(tt_scores,  dtype=np.float32)
+    s_h4b = np.asarray(h4b_scores, dtype=np.float32)
+
+    # background counts
+    fp = int(np.sum(s_b  >= cut))
+    tn = int(np.sum(s_b  <  cut))
+    nb = fp + tn
+
+    # per-signal counts
+    tp_tt = int(np.sum(s_tt  >= cut)) if s_tt.size else 0
+    fn_tt = int(np.sum(s_tt  <  cut)) if s_tt.size else 0
+    ns_tt = tp_tt + fn_tt
+
+    tp_h4b = int(np.sum(s_h4b >= cut)) if s_h4b.size else 0
+    fn_h4b = int(np.sum(s_h4b <  cut)) if s_h4b.size else 0
+    ns_h4b = tp_h4b + fn_h4b
+
+    # combined signal counts
+    tp = tp_tt + tp_h4b
+    fn = fn_tt + fn_h4b
+    ns = ns_tt + ns_h4b
+
+    def _safe_div(a, b):
+        return (float(a) / float(b)) if (b is not None and b > 0) else np.nan
+
+    def _f1(p, r):
+        return (2.0 * p * r / (p + r)) if np.isfinite(p) and np.isfinite(r) and (p + r) > 0 else np.nan
 
 
+    # rates (safe)
+    tpr = float(tp / ns) if ns > 0 else np.nan
+    fnr = float(fn / ns) if ns > 0 else np.nan
+    fpr = float(fp / nb) if nb > 0 else np.nan
+    tnr = float(tn / nb) if nb > 0 else np.nan
+    precision = float(tp / (tp + fp)) if (tp + fp) > 0 else 0
+    recall    = tp/(tp+fn) if (tp+fn)>0 else 0.0
+
+    tpr_tt  = float(tp_tt / ns_tt)  if ns_tt  > 0 else np.nan
+    tpr_h4b = float(tp_h4b / ns_h4b) if ns_h4b > 0 else np.nan
+
+    # per-signal precision using the SAME FP(background) you already use
+    # (binary view: signal vs background)
+    precision_tt  = _safe_div(tp_tt,  tp_tt  + fp)
+    precision_h4b = _safe_div(tp_h4b, tp_h4b + fp)
+
+    # per-signal F1
+    f1_tt  = _f1(precision_tt,  tpr_tt)
+    f1_h4b = _f1(precision_h4b, tpr_h4b)
+
+    # f1 = _f1(precision, tpr)
+    f1        = 2*precision*recall/(precision+recall) if (precision+recall)>0 else 0.0
+
+    return {
+        # counts
+        "tp": tp, "fp": fp, "tn": tn, "fn": fn,
+        "tp_tt": tp_tt, "fn_tt": fn_tt,
+        "tp_h4b": tp_h4b, "fn_h4b": fn_h4b,
+        "nb": nb, "ns": ns, "ns_tt": ns_tt, "ns_h4b": ns_h4b,
+
+        # rates
+        "tpr": tpr, "fnr": fnr, "fpr": fpr, "tnr": tnr,
+        "precision": precision, "f1": f1,
+
+        # per-signal rates
+        "tpr_tt": tpr_tt,
+        "tpr_h4b": tpr_h4b,
+        "precision_tt": precision_tt,
+        "precision_h4b": precision_h4b,
+        "f1_tt": f1_tt,
+        "f1_h4b": f1_h4b,
+    }
+
+def summarize_confusion_from_chunk_rows(chunk_rows, *, trigger, method):
+    """
+    Return MICRO-averaged rates computed from summed counts across chunks: This is for overall rates for paper_table.tex
+      TPR = sum(tp) / sum(tp+fn)
+      FPR = sum(fp) / sum(fp+tn)
+      TNR = sum(tn) / sum(fp+tn)
+      FNR = sum(fn) / sum(tp+fn)
+      Precision = sum(tp) / sum(tp+fp)
+    """
+    rows = [r for r in chunk_rows if r.get("trigger") == trigger and r.get("method") == method]
+    if not rows:
+        return {}
+
+    tp = np.array([r.get("tp") for r in rows], dtype=np.float64)
+    fp = np.array([r.get("fp") for r in rows], dtype=np.float64)
+    tn = np.array([r.get("tn") for r in rows], dtype=np.float64)
+    fn = np.array([r.get("fn") for r in rows], dtype=np.float64)
+
+    ok = np.isfinite(tp) & np.isfinite(fp) & np.isfinite(tn) & np.isfinite(fn)
+    if not np.any(ok):
+        # fallback to any pre-logged rates if counts are missing
+        tpr = np.array([r.get("tpr") for r in rows], dtype=np.float64)
+        fpr = np.array([r.get("fpr") for r in rows], dtype=np.float64)
+        prec = np.array([r.get("precision") for r in rows], dtype=np.float64)
+        return {
+            "TPR": float(np.nanmean(tpr)) if np.any(np.isfinite(tpr)) else np.nan,
+            "FPR": float(np.nanmean(fpr)) if np.any(np.isfinite(fpr)) else np.nan,
+            "TNR": np.nan,
+            "FNR": np.nan,
+            "Precision": float(np.nanmean(prec)) if np.any(np.isfinite(prec)) else np.nan,
+        }
+
+    TP = float(np.nansum(tp[ok]))
+    FP = float(np.nansum(fp[ok]))
+    TN = float(np.nansum(tn[ok]))
+    FN = float(np.nansum(fn[ok]))
+
+    ns = TP + FN
+    nb = FP + TN
+
+    with np.errstate(divide="ignore", invalid="ignore"):
+        tpr = TP / ns if ns > 0 else np.nan
+        fnr = FN / ns if ns > 0 else np.nan
+        fpr = FP / nb if nb > 0 else np.nan
+        tnr = TN / nb if nb > 0 else np.nan
+        prec = TP / (TP + FP) if (TP + FP) > 0 else np.nan
+        denom = 2 * TP + FP + FN
+        f1 = (2 * TP / denom) if denom > 0 else np.nan
+
+    return {"TPR": tpr, "FPR": fpr, "TNR": tnr, "FNR": fnr, "Precision": prec, "F1": f1}
+
+def summarize_confusion_from_chunk_rows_split(chunk_rows, *, trigger, method):
+    """
+    MICRO-averaged per-signal metrics from summed counts across chunks. This is for signal break down. Two signals for confusion_tt/h4b.tex
+
+    Returns:
+      FP, TN (background)
+      TP_tt, FN_tt, TPR_tt, Precision_tt Include breaking down signal
+      TP_h4b, FN_h4b, TPR_h4b, Precision_h4b
+      plus FPR (background acceptance)
+    """
+    rows = [r for r in chunk_rows if r.get("trigger") == trigger and r.get("method") == method]
+    if not rows:
+        return {}
+
+    def _sum_int(key):
+        vals = [rr.get(key, None) for rr in rows]
+        vals = [int(v) for v in vals if v is not None]
+        return int(np.sum(vals)) if vals else None
+
+    FP = _sum_int("fp")
+    TN = _sum_int("tn")
+    TP_tt  = _sum_int("tp_tt")
+    FN_tt  = _sum_int("fn_tt")
+    TP_h4b = _sum_int("tp_h4b")
+    FN_h4b = _sum_int("fn_h4b")
+
+    nb = (FP or 0) + (TN or 0)
+
+    def _safe_div(a, b):
+        return (float(a) / float(b)) if (a is not None and b is not None and b > 0) else np.nan
+    def _f1(p, r):
+        return (2.0 * p * r / (p + r)) if np.isfinite(p) and np.isfinite(r) and (p + r) > 0 else np.nan
+
+    # background rate
+    FPR = _safe_div(FP, nb)
+
+    # per-signal recall (TPR) and precision (TP/(TP+FP))
+    ns_tt  = (TP_tt or 0)  + (FN_tt or 0)
+    ns_h4b = (TP_h4b or 0) + (FN_h4b or 0)
+
+    TPR_tt  = _safe_div(TP_tt,  ns_tt)
+    TPR_h4b = _safe_div(TP_h4b, ns_h4b)
+
+    Precision_tt  = _safe_div(TP_tt,  (TP_tt  or 0) + (FP or 0))
+    Precision_h4b = _safe_div(TP_h4b, (TP_h4b or 0) + (FP or 0))
+
+    F1_tt  = _f1(Precision_tt,  TPR_tt)
+    F1_h4b = _f1(Precision_h4b, TPR_h4b)
+
+    return {
+        "FP": FP, "TN": TN, "FPR": FPR,
+        "TP_tt": TP_tt, "FN_tt": FN_tt, "TPR_tt": TPR_tt, "Precision_tt": Precision_tt, "F1_tt": F1_tt,
+        "TP_h4b": TP_h4b, "FN_h4b": FN_h4b, "TPR_h4b": TPR_h4b, "Precision_h4b": Precision_h4b, "F1_h4b": F1_h4b,
+    }
 
 
 def summarize_paper_table(r_pct, s_tt, s_aa, cut_hist, target_pct, tol_pct):
@@ -2934,127 +3130,396 @@ def summarize_paper_table(r_pct, s_tt, s_aa, cut_hist, target_pct, tol_pct):
     out["h_to_4b"] = safe_mean(s_aa, inband)
     return out
 
+def build_paper_rows_from_chunk_rows(chunk_rows, *, target_pct, tol_pct):
+    rows_out = []
 
+    # NOTE: build_series_from_chunk_rows expects trigger labels that match chunk_rows.
+    # triggers in chunk_rows are typically "HT" and "AS" (AD trigger).
+    for trig in ["HT", "AD"]:
+        series = build_series_from_chunk_rows(chunk_rows, trigger=trig)
+        if not series:
+            continue
+        
+        for method, s in series.items():
+            metrics = summarize_paper_table(
+                r_pct=s["bg_pct"],
+                s_tt=s["tt"],
+                s_aa=s["aa"],
+                cut_hist=s["cut"],
+                target_pct=target_pct,
+                tol_pct=tol_pct,
+            )
+
+            row = {"Trigger": ("AD" if trig == "AD" else trig), "Method": method, **metrics}
+            row.update(summarize_confusion_from_chunk_rows(
+                chunk_rows, trigger=trig, method=method
+            ))
+            rows_out.append(row)
+    return rows_out
+
+# def write_paper_table(rows, out_csv: Path, out_tex: Path, target_pct, tol_pct):
+#     """
+#     Writes:
+#       - CSV with columns: Trigger, Method, MAE, P95_abs_err, InBand, UpFrac, DownFrac, tt, h_to_4b
+#       - LaTeX table matching screenshot header
+#     """
+#     if not rows:
+#         return
+
+#     # ---- CSV ----
+#     fieldnames = ["Trigger", "Method", "MAE", "P95_abs_err", "InBand", "UpFrac", "DownFrac", "tt", "h_to_4b"]
+#     with open(out_csv, "w", newline="") as f:
+#         w = csv.DictWriter(f, fieldnames=fieldnames)
+#         w.writeheader()
+#         for r in rows:
+#             w.writerow({k: r.get(k, None) for k in fieldnames})
+
+#     # ---- Bold best per trigger ----
+#     higher_better = {"InBand", "tt", "h_to_4b"}
+#     lower_better  = {"MAE", "P95_abs_err", "UpFrac", "DownFrac"}
+
+#     # triggers = sorted(set(r["Trigger"] for r in rows))
+#     # ---- Force trigger/method order in outputs ----
+#     trigger_order = ["HT", "AD"]   
+#     # method_order  = ["Constant", "PID", "ADT", "DQN", "GRPO", "GFPO-F", "GFPO-FR"]
+#     method_order  = ["Constant", "PID", "ADT", "DQN", "PPO", "GRPO", "GFPO-F", "GFPO-FR"]
+
+#     trig_rank = {t: i for i, t in enumerate(trigger_order)}
+#     meth_rank = {m: i for i, m in enumerate(method_order)}
+
+#     def _trig_key(t):  # unknown triggers go last
+#         return trig_rank.get(t, 10**9)
+
+#     def _meth_key(m):
+#         return meth_rank.get(m, 10**9)
+
+#     # Reorder rows so CSV + LaTeX both follow the same order
+#     rows = sorted(rows, key=lambda r: (_trig_key(r["Trigger"]), _meth_key(r["Method"])))
+
+#     # Use the forced trigger order (only keep ones that exist)
+#     triggers = [t for t in trigger_order if any(rr["Trigger"] == t for rr in rows)]
+#     # If ever need to add other triggers later, append them at the end:
+#     triggers += [t for t in sorted(set(rr["Trigger"] for rr in rows)) if t not in triggers]
+#     best = {tr: {} for tr in triggers}
+
+#     for tr in triggers:
+#         sub = [r for r in rows if r["Trigger"] == tr]
+
+#         for k in higher_better:
+#             vals = np.array([float(x[k]) for x in sub], dtype=np.float64)
+#             i = int(np.nanargmax(vals)) if np.any(np.isfinite(vals)) else 0
+#             best[tr][k] = sub[i]["Method"]
+
+#         for k in lower_better:
+#             vals = np.array([float(x[k]) for x in sub], dtype=np.float64)
+#             i = int(np.nanargmin(vals)) if np.any(np.isfinite(vals)) else 0
+#             best[tr][k] = sub[i]["Method"]
+
+#     def fmt(v, nd=3):
+#         if v is None:
+#             return "nan"
+#         if isinstance(v, (float, np.floating)):
+#             if not np.isfinite(v):
+#                 return "nan"
+#             if abs(v) < 1e-3 and v != 0:
+#                 return f"{v:.2e}"
+#             return f"{v:.{nd}f}"
+#         return str(v)
+
+#     def cell(tr, method, key, val):
+#         s = fmt(val, 3)
+#         if best.get(tr, {}).get(key, None) == method:
+#             return r"\textbf{" + s + "}"
+#         return s
+
+#     # ---- LaTeX ----
+#     lines = []
+#     lines.append(r"\begin{table}[t]")
+#     lines.append(r"\centering")
+#     lines.append(r"\small")
+#     lines.append(r"\setlength{\tabcolsep}{6pt}")
+#     lines.append(r"\renewcommand{\arraystretch}{1.10}")
+#     lines.append(r"\begin{tabular}{llrrrrrrr}")
+#     lines.append(r"\hline")
+#     lines.append(
+#         r"Trigger & Method & MAE$\downarrow$ & P95$|e|$$\downarrow$ & InBand$\uparrow$ & "
+#         r"UpFrac$\downarrow$ & DownFrac$\downarrow$ & $t\bar{t}\uparrow$ & $h\rightarrow 4b\uparrow$ \\"
+#     )
+#     lines.append(r"\hline")
+
+#     for tr in triggers:
+#         sub = [r for r in rows if r["Trigger"] == tr]
+#         lines.append(rf"\multicolumn{{9}}{{l}}{{\textbf{{{tr} trigger}}}} \\")
+#         for r in sub:
+#             m = r["Method"]
+#             lines.append(
+#                 f"{tr} & {m} & "
+#                 f"{cell(tr,m,'MAE',r['MAE'])} & "
+#                 f"{cell(tr,m,'P95_abs_err',r['P95_abs_err'])} & "
+#                 f"{cell(tr,m,'InBand',r['InBand'])} & "
+#                 f"{cell(tr,m,'UpFrac',r['UpFrac'])} & "
+#                 f"{cell(tr,m,'DownFrac',r['DownFrac'])} & "
+#                 f"{cell(tr,m,'tt',r['tt'])} & "
+#                 f"{cell(tr,m,'h_to_4b',r['h_to_4b'])} \\\\"
+#             )
+#         lines.append(r"\hline")
+
+#     lines.append(r"\end{tabular}")
+#     lines.append(
+#         rf"\caption{{Summary of single-trigger control. Rates are in percent units with target "
+#         rf"$r^*={target_pct:.3f}\%$ and tolerance $\pm {tol_pct:.3f}\%$. "
+#         rf"InBand is the fraction of chunks within $|r-r^*|\le\tau$. "
+#         rf"UpFrac and DownFrac measures upward/downward band violations. "
+#         rf"$t\bar t$ and $h\rightarrow 4b$ are mean signal efficiencies conditioned on in-band chunks.}}"
+#     )
+#     lines.append(r"\label{tab:single_trigger_summary_paper}")
+#     lines.append(r"\end{table}")
+
+#     with open(out_tex, "w") as f:
+#         f.write("\n".join(lines) + "\n")
 def write_paper_table(rows, out_csv: Path, out_tex: Path, target_pct, tol_pct):
     """
     Writes:
-      - CSV with columns: Trigger, Method, MAE, P95_abs_err, InBand, UpFrac, DownFrac, tt, h_to_4b
-      - LaTeX table matching screenshot header
+      - CSV with columns:
+        Trigger, Method, MAE, P95_abs_err, InBand, UpFrac, DownFrac, TP, FP, TN, FN, Prec., F1, tt, h_to_4b
+      - LaTeX table with the same columns (and bold best-per-trigger)
     """
     if not rows:
         return
 
-    # ---- CSV ----
-    fieldnames = ["Trigger", "Method", "MAE", "P95_abs_err", "InBand", "UpFrac", "DownFrac", "tt", "h_to_4b"]
+    # ---------------- CSV ----------------
+    fieldnames = [
+        "Trigger", "Method",
+        "MAE", "P95_abs_err", "InBand", "UpFrac", "DownFrac",
+        "TPR", "FPR", "TNR", "FNR", "Precision", "F1",
+        "tt", "h_to_4b",
+    ]
     with open(out_csv, "w", newline="") as f:
         w = csv.DictWriter(f, fieldnames=fieldnames)
         w.writeheader()
         for r in rows:
             w.writerow({k: r.get(k, None) for k in fieldnames})
 
-    # ---- Bold best per trigger ----
-    higher_better = {"InBand", "tt", "h_to_4b"}
-    lower_better  = {"MAE", "P95_abs_err", "UpFrac", "DownFrac"}
+    # ---------------- best-per-trigger ----------------
+    higher_better = {"InBand", "tt", "h_to_4b", "TPR", "TNR", "Precision", "F1"}
+    lower_better  = {"MAE", "P95_abs_err", "UpFrac", "DownFrac", "FPR", "FNR"}
 
-    # triggers = sorted(set(r["Trigger"] for r in rows))
-    # ---- Force trigger/method order in outputs ----
-    trigger_order = ["HT", "AD"]   
-    # method_order  = ["Constant", "PID", "ADT", "DQN", "GRPO", "GFPO-F", "GFPO-FR"]
+    # Force output order
+    trigger_order = ["HT", "AD"]
     method_order  = ["Constant", "PID", "ADT", "DQN", "PPO", "GRPO", "GFPO-F", "GFPO-FR"]
-
     trig_rank = {t: i for i, t in enumerate(trigger_order)}
     meth_rank = {m: i for i, m in enumerate(method_order)}
+    def _trig_key(t): return trig_rank.get(t, 10**9)
+    def _meth_key(m): return meth_rank.get(m, 10**9)
 
-    def _trig_key(t):  # unknown triggers go last
-        return trig_rank.get(t, 10**9)
-
-    def _meth_key(m):
-        return meth_rank.get(m, 10**9)
-
-    # Reorder rows so CSV + LaTeX both follow the same order
     rows = sorted(rows, key=lambda r: (_trig_key(r["Trigger"]), _meth_key(r["Method"])))
 
-    # Use the forced trigger order (only keep ones that exist)
     triggers = [t for t in trigger_order if any(rr["Trigger"] == t for rr in rows)]
-    # If ever need to add other triggers later, append them at the end:
     triggers += [t for t in sorted(set(rr["Trigger"] for rr in rows)) if t not in triggers]
-    best = {tr: {} for tr in triggers}
 
+    def _as_float(v):
+        if v is None:
+            return np.nan
+        try:
+            return float(v)
+        except Exception:
+            return np.nan
+
+    best = {tr: {} for tr in triggers}
     for tr in triggers:
         sub = [r for r in rows if r["Trigger"] == tr]
 
         for k in higher_better:
-            vals = np.array([float(x[k]) for x in sub], dtype=np.float64)
+            vals = np.array([_as_float(x.get(k, None)) for x in sub], dtype=np.float64)
             i = int(np.nanargmax(vals)) if np.any(np.isfinite(vals)) else 0
             best[tr][k] = sub[i]["Method"]
 
         for k in lower_better:
-            vals = np.array([float(x[k]) for x in sub], dtype=np.float64)
+            vals = np.array([_as_float(x.get(k, None)) for x in sub], dtype=np.float64)
             i = int(np.nanargmin(vals)) if np.any(np.isfinite(vals)) else 0
             best[tr][k] = sub[i]["Method"]
 
-    def fmt(v, nd=3):
-        if v is None:
+    # ---------------- formatting helpers ----------------
+    def fmt_key(key, val, nd=3):
+        if val is None:
             return "nan"
-        if isinstance(v, (float, np.floating)):
-            if not np.isfinite(v):
-                return "nan"
-            if abs(v) < 1e-3 and v != 0:
-                return f"{v:.2e}"
-            return f"{v:.{nd}f}"
-        return str(v)
+        try:
+            v = float(val)
+        except Exception:
+            return "nan"
+        if not np.isfinite(v):
+            return "nan"
+        return f"{v:.{nd}f}"
 
-    def cell(tr, method, key, val):
-        s = fmt(val, 3)
+    def maybe_bold(tr, method, key, s):
+        # only bold if this method is best for this trigger+metric
         if best.get(tr, {}).get(key, None) == method:
             return r"\textbf{" + s + "}"
         return s
 
-    # ---- LaTeX ----
+    # ---------------- LaTeX ----------------
+    # NOTE: this is wide; reduce spacing + font size.
     lines = []
     lines.append(r"\begin{table}[t]")
     lines.append(r"\centering")
-    lines.append(r"\small")
-    lines.append(r"\setlength{\tabcolsep}{6pt}")
-    lines.append(r"\renewcommand{\arraystretch}{1.10}")
-    lines.append(r"\begin{tabular}{llrrrrrrr}")
-    lines.append(r"\hline")
+    lines.append(r"\scriptsize")
+    lines.append(r"\setlength{\tabcolsep}{2.5pt}")
+    lines.append(r"\renewcommand{\arraystretch}{1.05}")
+    lines.append(r"\begin{tabular}{llccccccrrrrcc}")
+    lines.append(r"\toprule")
     lines.append(
-        r"Trigger & Method & MAE$\downarrow$ & P95$|e|$$\downarrow$ & InBand$\uparrow$ & "
-        r"UpFrac$\downarrow$ & DownFrac$\downarrow$ & $t\bar{t}\uparrow$ & $h\rightarrow 4b\uparrow$ \\"
+        r"Trigger & Method & "
+        r"MAE$\downarrow$ & P95$|e|$\downarrow$ & InBand$\uparrow$ & UpFrac$\downarrow$ & DownFrac$\downarrow$ & "
+        r"TPR/Recall$\uparrow$ & FPR$\downarrow$ & TNR$\uparrow$ & FNR$\downarrow$ & Prec.$\uparrow$ & F1$\uparrow$ & "
+        r"$t\bar t\,\uparrow$ & $h\to4b\,\uparrow$ \\"
     )
-    lines.append(r"\hline")
+    lines.append(r"\midrule")
 
-    for tr in triggers:
-        sub = [r for r in rows if r["Trigger"] == tr]
-        lines.append(rf"\multicolumn{{9}}{{l}}{{\textbf{{{tr} trigger}}}} \\")
-        for r in sub:
-            m = r["Method"]
-            lines.append(
-                f"{tr} & {m} & "
-                f"{cell(tr,m,'MAE',r['MAE'])} & "
-                f"{cell(tr,m,'P95_abs_err',r['P95_abs_err'])} & "
-                f"{cell(tr,m,'InBand',r['InBand'])} & "
-                f"{cell(tr,m,'UpFrac',r['UpFrac'])} & "
-                f"{cell(tr,m,'DownFrac',r['DownFrac'])} & "
-                f"{cell(tr,m,'tt',r['tt'])} & "
-                f"{cell(tr,m,'h_to_4b',r['h_to_4b'])} \\\\"
-            )
-        lines.append(r"\hline")
+    # Optional: group by trigger with a midrule
+    cur_tr = None
+    for r in rows:
+        tr = r["Trigger"]
+        m  = r["Method"]
+        if cur_tr is None:
+            cur_tr = tr
+        elif tr != cur_tr:
+            lines.append(r"\midrule")
+            cur_tr = tr
 
+        row = []
+        row.append(tr)
+        row.append(m)
+
+        for key, nd in [
+            ("MAE", 2),
+            ("P95_abs_err", 3),
+            ("InBand", 3),
+            ("UpFrac", 3),
+            ("DownFrac", 3),
+            ("TPR", 3), ("FPR", 3), ("TNR", 3), ("FNR", 3), ("Precision", 3), ("F1", 3),
+            ("tt", 3),
+            ("h_to_4b", 3),
+        ]:
+            s = fmt_key(key, r.get(key, None), nd=nd)
+            s = maybe_bold(tr, m, key, s)
+            row.append(s)
+
+        # build line
+        # columns: Trigger, Method, MAE, P95, InBand, UpFrac, DownFrac, TPR, FPR, TNR, FNR, Precision, F1, tt, h_to_4b
+        lines.append(
+            f"{row[0]} & {row[1]} & "
+            f"{row[2]} & {row[3]} & {row[4]} & {row[5]} & {row[6]} & "
+            f"{row[7]} & {row[8]} & {row[9]} & {row[10]} & "
+            f"{row[11]} & {row[12]} & {row[13]} & {row[14]}  \\\\"
+        )
+
+    lines.append(r"\bottomrule")
     lines.append(r"\end{tabular}")
     lines.append(
-        rf"\caption{{Summary of single-trigger control. Rates are in percent units with target "
-        rf"$r^*={target_pct:.3f}\%$ and tolerance $\pm {tol_pct:.3f}\%$. "
-        rf"InBand is the fraction of chunks within $|r-r^*|\le\tau$. "
-        rf"UpFrac and DownFrac measures upward/downward band violations. "
-        rf"$t\bar t$ and $h\rightarrow 4b$ are mean signal efficiencies conditioned on in-band chunks.}}"
+        rf"\caption{{Summary over evaluation window. Target={float(target_pct)*RATE_SCALE_KHZ:.1f} kHz, "
+        rf"tolerance={float(tol_pct)*RATE_SCALE_KHZ:.1f} kHz.}}"
     )
-    lines.append(r"\label{tab:single_trigger_summary_paper}")
+    lines.append(r"\label{tab:trigger_summary}")
     lines.append(r"\end{table}")
 
-    with open(out_tex, "w") as f:
-        f.write("\n".join(lines) + "\n")
+    out_tex.write_text("\n".join(lines) + "\n")
+
+def write_confusion_split_tables_tex(chunk_rows, out_tt_tex: Path, out_h4b_tex: Path):
+    """
+    Writes two LaTeX tables (micro-averaged over chunks by summing counts):
+      - out_tt_tex  : ttbar-as-signal vs background
+      - out_h4b_tex : h->4b-as-signal vs background
+
+    Uses summarize_confusion_from_chunk_rows_split(...).
+    """
+    trigger_order = ["HT", "AD"]
+    method_order  = ["Constant", "PID", "ADT", "DQN", "PPO", "GRPO", "GFPO-F", "GFPO-FR"]
+
+    def _fmt(x, nd=3):
+        if x is None:
+            return "nan"
+        try:
+            v = float(x)
+        except Exception:
+            return "nan"
+        if not np.isfinite(v):
+            return "nan"
+        return f"{v:.{nd}f}"
+
+    def _write_one(path: Path, *, which: str):
+        # which in {"tt", "h4b"}
+        lines = []
+        lines.append(r"\begin{table}[t]")
+        lines.append(r"\centering")
+        lines.append(r"\scriptsize")
+        lines.append(r"\setlength{\tabcolsep}{3.0pt}")
+        lines.append(r"\renewcommand{\arraystretch}{1.05}")
+
+        if which == "tt":
+            caption = r"Confusion / classification metrics treating $t\bar t$ as signal and background as negative."
+            colhdr  = r"TP$_{t\bar t}$ & FN$_{t\bar t}$ & FP & TN & TPR$_{t\bar t}$ & Prec.$_{t\bar t}$ & F1$_{t\bar t}$ & FPR"
+        else:
+            caption = r"Confusion / classification metrics treating $h\to4b$ as signal and background as negative."
+            colhdr  = r"TP$_{h\to4b}$ & FN$_{h\to4b}$ & FP & TN & TPR$_{h\to4b}$ & Prec.$_{h\to4b}$ & F1$_{h\to4b}$ & FPR"
+
+        lines.append(r"\begin{tabular}{llrrrrrrrr}")
+        lines.append(r"\toprule")
+        lines.append(r"Trigger & Method & " + colhdr + r" \\")
+        lines.append(r"\midrule")
+
+        cur_tr = None
+        for tr in trigger_order:
+            for m in method_order:
+                s = summarize_confusion_from_chunk_rows_split(chunk_rows, trigger=tr, method=m)
+                if not s:
+                    continue
+
+                if cur_tr is None:
+                    cur_tr = tr
+                elif tr != cur_tr:
+                    lines.append(r"\midrule")
+                    cur_tr = tr
+
+                if which == "tt":
+                    TP = s.get("TP_tt", None); FN = s.get("FN_tt", None)
+                    TPR = s.get("TPR_tt", np.nan)
+                    PRE = s.get("Precision_tt", np.nan)
+                    F1  = s.get("F1_tt", np.nan)
+                else:
+                    TP = s.get("TP_h4b", None); FN = s.get("FN_h4b", None)
+                    TPR = s.get("TPR_h4b", np.nan)
+                    PRE = s.get("Precision_h4b", np.nan)
+                    F1  = s.get("F1_h4b", np.nan)
+
+                FP = s.get("FP", None)
+                TN = s.get("TN", None)
+                FPR = s.get("FPR", np.nan)
+
+                # counts as ints, rates as floats
+                def _int_or_nan(v):
+                    return ("nan" if v is None else str(int(v)))
+
+                row = [
+                    tr, m,
+                    _int_or_nan(TP),
+                    _int_or_nan(FN),
+                    _int_or_nan(FP),
+                    _int_or_nan(TN),
+                    _fmt(TPR, 3),
+                    _fmt(PRE, 3),
+                    _fmt(F1,  3),
+                    _fmt(FPR, 3),
+                ]
+                lines.append(" & ".join(row) + r" \\")
+
+        lines.append(r"\bottomrule")
+        lines.append(r"\end{tabular}")
+        lines.append(r"\caption{" + caption + r"}")
+        lines.append(r"\end{table}")
+        path.write_text("\n".join(lines) + "\n")
+
+    _write_one(out_tt_tex, which="tt")
+    _write_one(out_h4b_tex, which="h4b")
 
 def running_mean_bool(mask, w=3):
     m = np.asarray(mask, dtype=np.float64)
@@ -3450,7 +3915,7 @@ def main():
     ap.add_argument("--input", default="Data/Matched_data_2016_dim2.h5", #Data/Trigger_food_MC.h5
                     choices=["Data/Trigger_food_MC.h5", "Data/Matched_data_2016_dim2.h5", "Data/Trigger_food_MC_ablation_4.h5", "Data/Trigger_food_MC_ablation_6.h5", "Data/Trigger_food_MC_ablation_8.h5", "Data/Matched_data_2016_with04_paper.h5"])
     ap.add_argument("--outdir", default="outputs/demo_sing_grpo_as_feature_rollout")
-    ap.add_argument("--control", default="MC", choices=["MC", "RealData"])
+    ap.add_argument("--control", default="RealData", choices=["MC", "RealData"])
     ap.add_argument("--score-dim-hint", type=int, default=2)
     ap.add_argument("--as-dim", type=int, default=2, choices=[1, 2, 4, 6, 8])
 
@@ -3526,12 +3991,6 @@ def main():
                     help="GFPO ranking: mix*tt + (1-mix)*aa within feasible set")
 
 
-    # ap.add_argument(
-    #     "--baselines",
-    #     type=str,
-    #     default="constant,pid,adt,dqn,grpo,gfpo_f,gfpo_fr",
-    #     help="Comma-separated: constant,pid,dqn,grpo,gfpo_f,gfpo_fr"
-    # )
     ap.add_argument(
         "--baselines",
         type=str,
@@ -4252,8 +4711,12 @@ def main():
         idx = np.arange(I, end)
         bas = Bas[idx]
         bnpv = Bnpv[idx]
+
+        bas_chunk = bas[I:end]
+        
         if args.run_ht:
             bht = Bht[idx]
+            bht_chunk = bht[I:end]
         # signals for the chunk
         if matched_by_index:
             end_sig = min(end, len(Tas), len(Aas), len(Tnpv), len(Anpv))
@@ -4332,6 +4795,7 @@ def main():
                         grpo_samples=grpo_samples,   # keep unified log
                     )
                     micro_global = out.micro_global
+                
  
 
             if args.run_ht:
@@ -4377,11 +4841,6 @@ def main():
         # ============================
         
         logs_by_method = {}
-        # PID chunk update happens once per chunk
-        for ctrl in controllers_as:
-            if ctrl.name == "PID":
-                ctrl.step_chunk(bas)
-
         # Now log chunk metrics for ALL methods
         for ctrl in controllers_as:
             cut = ctrl.cut_value()
@@ -4390,38 +4849,51 @@ def main():
             aa = float(Sing_Trigger(sas_aa, cut))
             occ = float(near_occupancy(bas, cut, near_widths_as)[1])
 
+            cm = confusion_counts_at_cut_split(bas_j, sas_tt, sas_aa, cut)
+
             log_chunk_stats(
                 chunk=t, trigger="AD", method=ctrl.name,
                 cut=cut, bg_pct=bg, tt=tt, aa=aa,
-                occ_mid=occ, target=target, tol=tol
+                occ_mid=occ, target=target, tol=tol,
+                tp=cm["tp"], fp=cm["fp"], tn=cm["tn"], fn=cm["fn"],
+                tpr=cm["tpr"], fpr=cm["fpr"], precision=cm["precision"], f1=cm["f1"],
+                tp_tt=cm["tp_tt"], fn_tt=cm["fn_tt"],
+                tp_h4b=cm["tp_h4b"], fn_h4b=cm["fn_h4b"],
+                tpr_tt=cm["tpr_tt"], precision_tt=cm["precision_tt"], f1_tt=cm["f1_tt"],
+                tpr_h4b=cm["tpr_h4b"], precision_h4b=cm["precision_h4b"], f1_h4b=cm["f1_h4b"],
             )   
-        
+            ctrl.end_chunk(chunk=t, bas_j=bas_j) 
+
         # AD score distribution for this chunk
         h_as, _ = np.histogram(bas, bins=as_edges, density=True)
         as_hists.append(h_as)
         as_stats.append(_score_chunk_stats(bas))
 
-  
 
         # --- HT chunk-level logs (ONLY if enabled --run-ht) ---
         if args.run_ht:
-
-            for ctrl in controllers_ht:
-                if ctrl.name == "PID":
-                    ctrl.step_chunk(bht)
-
             for ctrl in controllers_ht:
                 cut = ctrl.cut_value()
                 bg = float(Sing_Trigger(bht, cut))
                 tt = float(Sing_Trigger(sht_tt, cut))
                 aa = float(Sing_Trigger(sht_aa, cut))
                 occ = float(near_occupancy(bht, cut, near_widths_ht)[1])
+                cm = confusion_counts_at_cut_split(bht_j, sht_tt, sht_aa, cut)
 
                 log_chunk_stats(
                     chunk=t, trigger="HT", method=ctrl.name,
                     cut=cut, bg_pct=bg, tt=tt, aa=aa,
-                    occ_mid=occ, target=target, tol=tol
+                    occ_mid=occ, target=target, tol=tol,
+                    tp=cm["tp"], fp=cm["fp"], tn=cm["tn"], fn=cm["fn"],
+                    tpr=cm["tpr"], fpr=cm["fpr"], precision=cm["precision"], f1=cm["f1"],
+                    tp_tt=cm["tp_tt"], fn_tt=cm["fn_tt"], precision_tt=cm["precision_tt"],
+                    f1_tt=cm["f1_tt"],
+                    tp_h4b=cm["tp_h4b"], fn_h4b=cm["fn_h4b"], precision_h4b=cm["precision_h4b"],
+                    f1_h4b=cm["f1_h4b"],
                 )
+                ctrl.end_chunk(chunk=t, bht_j=bht_j)   # HT PID
+
+                
 
 
             tt_ht_const = Sing_Trigger(sht_tt, fixed_Ht_cut)
@@ -4434,10 +4906,7 @@ def main():
             aa_ht_grpo = Sing_Trigger(sht_aa, Ht_cut_grpo)
 
             tt_ht_dqn = Sing_Trigger(sht_tt, Ht_cut_dqn)
-            aa_ht_dqn = Sing_Trigger(sht_aa, Ht_cut_dqn)
-
-
-        
+            aa_ht_dqn = Sing_Trigger(sht_aa, Ht_cut_dqn)        
 
     # --- always dump the chunk table ---
     write_chunk_stats_csv(tables_dir / "chunk_stats.csv")
@@ -4631,13 +5100,18 @@ def main():
             tag=tag,
         )
 
-
+    paper_rows = build_paper_rows_from_chunk_rows(chunk_rows, target_pct=target, tol_pct=tol)
     write_paper_table(
         paper_rows,
-        out_csv=tables_dir / "summary_table.csv",
-        out_tex=tables_dir / "summary_table.tex",
+        out_csv=tables_dir / "paper_table.csv",
+        out_tex=tables_dir / "paper_table.tex",
         target_pct=target,
         tol_pct=tol,
+    )
+    write_confusion_split_tables_tex(
+        chunk_rows,
+        out_tt_tex=tables_dir / "confusion_tt.tex",
+        out_h4b_tex=tables_dir / "confusion_h4b.tex",
     )
 
     def write_grpo_samples_csv(path: Path, rows):
