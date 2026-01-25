@@ -14,6 +14,7 @@ for multiple candidate deltas at the same micro-step.
 
 from __future__ import annotations
 from dataclasses import dataclass
+from SampleProcessing import ae
 import numpy as np
 from typing import Optional, Tuple, Sequence
 import math
@@ -289,7 +290,15 @@ class GRPOAgent:
 
         # normalized band error
         err = abs(float(bg_after) - float(rcfg.target)) / tol
-        violation = max(0.0, err - 1.0)   # 0 in-band, positive out-of-band
+        # violation = max(0.0, err - 1.0)   # 0 in-band, positive out-of-band
+
+            # Rate Tracking: reward being within tolerance, penalize being outside
+        if err <= 1.0:
+            # no violation
+            violation = 0
+        else:
+            # linear penalty outside band, continuous at ae=1
+            violation = - (err - 1.0)
 
         move_pen = abs(float(delta_applied)) / max_delta
 

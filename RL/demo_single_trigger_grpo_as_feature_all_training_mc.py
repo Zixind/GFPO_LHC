@@ -3470,7 +3470,7 @@ def main():
     ap.add_argument("--temperature", type=float, default=1.0)
     ap.add_argument("--beta-kl", type=float, default=0.02)
     ap.add_argument("--ent-coef", type=float, default=0.01)
-    ap.add_argument("--lr", type=float, default=2e-4) #originally 3e-4
+    ap.add_argument("--grpo-lr", type=float, default=2e-4) #originally 3e-4
     ap.add_argument("--band-mult-ht", type=float, default=1.0,
                 help="HT candidate filter band: |bg-target| <= band-mult * tol (1.0 = exact tolerance)")
     ap.add_argument("--band-mult-as", type=float, default=1.0,
@@ -3522,12 +3522,6 @@ def main():
                     help="GFPO ranking: mix*tt + (1-mix)*aa within feasible set")
 
 
-    # ap.add_argument(
-    #     "--baselines",
-    #     type=str,
-    #     default="constant,pid,adt,dqn,grpo,gfpo_f,gfpo_fr",
-    #     help="Comma-separated: constant,pid,dqn,grpo,gfpo_f,gfpo_fr"
-    # )
     ap.add_argument(
         "--baselines",
         type=str,
@@ -3728,7 +3722,7 @@ def main():
 
     # GRPO agent AS
     cfg = GRPOConfig(
-        lr=args.lr,
+        lr=args.grpo_lr,
         beta_kl=args.beta_kl,
         ent_coef=args.ent_coef,
         device="cpu",
@@ -3749,7 +3743,7 @@ def main():
         w_occ=float(args.occ_pen)
     ))
     gfpo_cfg_as = GRPOConfig(
-        lr=args.lr,
+        lr=args.grpo_lr,
         beta_kl=args.beta_kl,
         ent_coef=args.ent_coef,
         device="cpu",
@@ -4030,7 +4024,7 @@ def main():
         
         if "grpo" in BASELINES:
             cfg_ht = GRPOConfig(
-                lr=args.lr, beta_kl=args.beta_kl, ent_coef=args.ent_coef,
+                lr=args.grpo_lr, beta_kl=args.beta_kl, ent_coef=args.ent_coef,
                 device="cpu", batch_size=256, train_epochs=2, ref_update_interval=200,
             )
             agent_ht = GRPOAgent(
@@ -4139,7 +4133,7 @@ def main():
 
     if args.run_ht:
         gfpo_cfg_ht = GRPOConfig(
-            lr=args.lr, beta_kl=args.beta_kl, ent_coef=args.ent_coef,
+            lr=args.grpo_lr, beta_kl=args.beta_kl, ent_coef=args.ent_coef,
             device="cpu", batch_size=256, train_epochs=2, ref_update_interval=200,
         )
 
@@ -4428,7 +4422,7 @@ def main():
             tt_ht_dqn = Sing_Trigger(sht_tt, Ht_cut_dqn)
             aa_ht_dqn = Sing_Trigger(sht_aa, Ht_cut_dqn)
 
-    # Example: after MC training
+    # Saving models: after MC training
     if args.save_models:
         save_registry_mc(
             AGENT_REGISTRY,

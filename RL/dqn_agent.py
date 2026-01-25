@@ -487,7 +487,12 @@ def compute_reward(
 
 
     # bg_pen = abs(float(bg_rate) - float(target)) / tol
-    sig_term = 0.5 * (2 * float(sig_rate_1) + float(sig_rate_2)) / 100.0
+    # sig_term = 0.5 * (2 * float(sig_rate_1) + float(sig_rate_2)) / 100.0
+
+    # signal mix in ~[0,1]
+    tt = float(sig_rate_1) / 100.0
+    aa = float(sig_rate_2) / 100.0
+    sig_term = float(alpha) * tt + (1.0 - alpha) * aa #alpha ttbar focus
 
     move_pen = abs(float(delta_applied)) / max_delta
 
@@ -497,7 +502,7 @@ def compute_reward(
         db = abs(float(bg_rate) - float(prev_bg_rate)) / tol
         stab_pen = db * db
     # r = -bg_pen + alpha * sig_term - beta * move_pen
-    r = track + alpha * sig_term - beta * move_pen - gamma_stab * stab_pen
+    r = track + sig_term - beta * move_pen - gamma_stab * stab_pen
     lo, hi = clip 
     return float(np.clip(r, lo, hi))
 

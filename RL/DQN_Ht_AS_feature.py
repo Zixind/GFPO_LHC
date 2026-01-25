@@ -341,7 +341,7 @@ def main():
     MAX_DELTA_AS = float(np.max(np.abs(AS_DELTAS))) * AS_STEP
     print("MAX_DELTA_AS=", MAX_DELTA_AS)
 
-    cfg = DQNConfig(lr=5e-4, gamma=0.95, batch_size=32, target_update=200)
+    cfg = DQNConfig(lr=1e-4, gamma=0.95, batch_size=32, target_update=200)
     
     # Make AS agent slower learning rate for faster adaptation
     cfg_as = DQNConfig(lr=1e-4, gamma=0.95, batch_size=32, target_update=200)
@@ -1058,7 +1058,7 @@ def main():
     # ------------------------- common styles -------------------------
     styles = {
         "Constant": CONST_STYLE,
-        "PD":       PD_STYLE,
+        "PID":       PD_STYLE,
         "DQN":      DQN_STYLE,
         "DQN-F":   DQNF_STYLE
     }
@@ -1079,30 +1079,6 @@ def main():
 
     
     # ------------------------- diagnostic plot styling -------------------------
-
-    # DIAG_AX_LABEL_FS = AX_LABEL_FS
-    # DIAG_TICK_FS     = TICK_FS
-    # DIAG_LEGEND_FS   = LEGEND_FS
-    # DIAG_LEGEND_TITLE_FS = LEGEND_TITLE_FS
-
-    # def style_diag_axes(ax, xlabel, ylabel, ylim=None):
-    #     ax.set_xlabel(xlabel, fontsize=DIAG_AX_LABEL_FS)
-    #     ax.set_ylabel(ylabel, fontsize=DIAG_AX_LABEL_FS)
-    #     ax.tick_params(axis="both", which="major", labelsize=DIAG_TICK_FS)
-    #     if ylim is not None:
-    #         ax.set_ylim(*ylim)
-    #     ax.grid(True, linestyle="--", alpha=0.5)
-
-    # def style_diag_legend(ax, title=None, loc="best"):
-    #     leg = ax.legend(loc=loc, frameon=True, fontsize=DIAG_LEGEND_FS, title=title)
-    #     if title is not None and leg is not None:
-    #         leg.get_title().set_fontsize(DIAG_LEGEND_TITLE_FS)
-    #     return leg
-
-    # def finalize_diag_fig(fig, top=0.86):
-    #     # Reserve space for CMS header so it doesn’t collide with ticks/title
-    #     fig.tight_layout()
-    #     fig.subplots_adjust(top=top)
 
     time = np.linspace(0, 1, len(R1_ht))
 
@@ -1238,7 +1214,7 @@ def main():
     # Plot 1a: HT near-cut occupancy vs time (per chunk)
     fig, ax = plt.subplots(figsize=(10, 8))
     for k, w in enumerate(near_widths_ht):
-        ax.plot(time, near_occ_ht[:, k], linewidth=2.0, label=fr"$|HT-\theta|\leq {w:g}$ GeV")
+        ax.plot(time, near_occ_ht[:, k], linewidth=2.0, label=fr"$|HT-c|\leq {w:g}$ GeV")
     style_diag_axes(
         ax,
         xlabel="Time (Fraction of Run)",
@@ -1259,7 +1235,7 @@ def main():
     style_diag_axes(
         ax,
         xlabel=r"Near-cut occupancy ($w=10$ GeV)",
-        ylabel=r"$|\,\Delta r\,| / (|\,\Delta \theta\,|+\epsilon)$  [pct/GeV]",
+        ylabel=r"$|\,\Delta r_{B}\,| / (|\,\Delta c\,|+\epsilon)$  [pct/GeV]",
     )
     style_diag_legend(ax, title="Sensitivity scatter", loc="upper right")
     finalize_diag_fig(fig)
@@ -1318,7 +1294,7 @@ def main():
     # =========================================================
     # (2) HT cut evolution
     fig, ax = plt.subplots(figsize=(10, 6))
-    ax.plot(time, Ht_pd_hist,  color="mediumblue", linewidth=2.0, label="PD Controller")
+    ax.plot(time, Ht_pd_hist,  color="mediumblue", linewidth=2.0, label="PID Controller")
     ax.plot(time, Ht_dqn_hist, color="tab:purple", label="DQN", **DQN_STYLE)
     ax.axhline(y=fixed_Ht_cut, color="gray", linestyle="--", linewidth=1.5, label="fixed_Ht_cut")
     ax.set_xlabel("Time (Fraction of Run)", loc="center")
@@ -1345,10 +1321,10 @@ def main():
             label=fr"Constant Menu, ttbar ($\epsilon[t_0]={tt_c_const[0]:.2f}\%$)")
     ax.plot(time, rel_to_t0(aa_c_const), color=colors_ht["HToAATo4B"], **styles["Constant"],
             label=fr"Constant Menu, HToAATo4B ($\epsilon[t_0]={aa_c_const[0]:.2f}\%$)")
-    ax.plot(time, rel_to_t0(tt_c_pd), color=colors_ht["ttbar"], **styles["PD"],
-            label=fr"PD Controller, ttbar ($\epsilon[t_0]={tt_c_pd[0]:.2f}\%$)")
-    ax.plot(time, rel_to_t0(aa_c_pd), color=colors_ht["HToAATo4B"], **styles["PD"],
-            label=fr"PD Controller, HToAATo4B ($\epsilon[t_0]={aa_c_pd[0]:.2f}\%$)")
+    ax.plot(time, rel_to_t0(tt_c_pd), color=colors_ht["ttbar"], **styles["PID"],
+            label=fr"PID Controller, ttbar ($\epsilon[t_0]={tt_c_pd[0]:.2f}\%$)")
+    ax.plot(time, rel_to_t0(aa_c_pd), color=colors_ht["HToAATo4B"], **styles["PID"],
+            label=fr"PID Controller, HToAATo4B ($\epsilon[t_0]={aa_c_pd[0]:.2f}\%$)")
     ax.plot(time, rel_to_t0(tt_c_dqn), color=colors_ht["ttbar"],
             label=fr"DQN, ttbar ($\epsilon[t_0]={tt_c_dqn[0]:.2f}\%$)", **DQN_STYLE)
     ax.plot(time, rel_to_t0(aa_c_dqn), color=colors_ht["HToAATo4B"],
@@ -1375,10 +1351,10 @@ def main():
             label=fr"Constant Menu, ttbar ($\epsilon[t_0]={L_tt_ht_const[0]:.2f}\%$)")
     ax.plot(time, rel_to_t0(L_aa_ht_const), color=colors_ht["HToAATo4B"], **styles["Constant"],
             label=fr"Constant Menu, HToAATo4B ($\epsilon[t_0]={L_aa_ht_const[0]:.2f}\%$)")
-    ax.plot(time, rel_to_t0(L_tt_ht_pd), color=colors_ht["ttbar"], **styles["PD"],
-            label=fr"PD Controller, ttbar ($\epsilon[t_0]={L_tt_ht_pd[0]:.2f}\%$)")
-    ax.plot(time, rel_to_t0(L_aa_ht_pd), color=colors_ht["HToAATo4B"], **styles["PD"],
-            label=fr"PD Controller, HToAATo4B ($\epsilon[t_0]={L_aa_ht_pd[0]:.2f}\%$)")
+    ax.plot(time, rel_to_t0(L_tt_ht_pd), color=colors_ht["ttbar"], **styles["PID"],
+            label=fr"PID Controller, ttbar ($\epsilon[t_0]={L_tt_ht_pd[0]:.2f}\%$)")
+    ax.plot(time, rel_to_t0(L_aa_ht_pd), color=colors_ht["HToAATo4B"], **styles["PID"],
+            label=fr"PID Controller, HToAATo4B ($\epsilon[t_0]={L_aa_ht_pd[0]:.2f}\%$)")
     ax.plot(time, rel_to_t0(L_tt_ht_dqn), color=colors_ht["ttbar"], 
             label=fr"DQN, ttbar ($\epsilon[t_0]={L_tt_ht_dqn[0]:.2f}\%$)", **DQN_STYLE)
     ax.plot(time, rel_to_t0(L_aa_ht_dqn), color=colors_ht["HToAATo4B"], 
@@ -1420,7 +1396,7 @@ def main():
     # Plot 1b: AS near-cut occupancy vs time (per chunk)
     fig, ax = plt.subplots(figsize=(10, 8))
     for k, w in enumerate(near_widths_as):
-        ax.plot(time_as, near_occ_as[:, k], linewidth=2.0, label=fr"$|AS-\theta|\leq {w:g}$")
+        ax.plot(time_as, near_occ_as[:, k], linewidth=2.0, label=fr"$|AD-c|\leq {w:g}$")
     style_diag_axes(
         ax,
         xlabel="Time (Fraction of Run)",
@@ -1448,7 +1424,7 @@ def main():
     style_diag_axes(
         ax,
         xlabel=r"Near-cut occupancy ($w=0.5$)",
-        ylabel=r"$|\,\Delta r\,| / (|\,\Delta \theta\,|+\epsilon)$  [pct/unit]",
+        ylabel=r"$|\,\Delta r_{B}\,| / (|\,\Delta c\,|+\epsilon)$  [pct/unit]",
     )
     style_diag_legend(ax, title=None)
 
@@ -1491,7 +1467,7 @@ def main():
 
     # (A2) AS cut evolution
     fig, ax = plt.subplots(figsize=(10, 6))
-    ax.plot(time_as, As_pd_hist,  color="mediumblue", linewidth=2.0, label="PD Controller")
+    ax.plot(time_as, As_pd_hist,  color="mediumblue", linewidth=2.0, label="PID Controller")
     ax.plot(time_as, As_dqn_hist, color="tab:purple", linewidth=2.0, label="DQN")
     ax.axhline(y=fixed_AS_cut, color="gray", linestyle="--", linewidth=1.5, label="fixed_AS_cut")
     ax.set_xlabel("Time (Fraction of Run)", loc="center")
@@ -1519,10 +1495,10 @@ def main():
             label=fr"Constant Menu, ttbar ($\epsilon[t_0]={tt_c_const[0]:.2f}\%$)")
     ax.plot(time_as, rel_to_t0(aa_c_const), color=colors_ad["HToAATo4B"], **styles["Constant"],
             label=fr"Constant Menu, HToAATo4B ($\epsilon[t_0]={aa_c_const[0]:.2f}\%$)")
-    ax.plot(time_as, rel_to_t0(tt_c_pd), color=colors_ad["ttbar"], **styles["PD"],
-            label=fr"PD Controller, ttbar ($\epsilon[t_0]={tt_c_pd[0]:.2f}\%$)")
-    ax.plot(time_as, rel_to_t0(aa_c_pd), color=colors_ad["HToAATo4B"], **styles["PD"],
-            label=fr"PD Controller, HToAATo4B ($\epsilon[t_0]={aa_c_pd[0]:.2f}\%$)")
+    ax.plot(time_as, rel_to_t0(tt_c_pd), color=colors_ad["ttbar"], **styles["PID"],
+            label=fr"PID Controller, ttbar ($\epsilon[t_0]={tt_c_pd[0]:.2f}\%$)")
+    ax.plot(time_as, rel_to_t0(aa_c_pd), color=colors_ad["HToAATo4B"], **styles["PID"],
+            label=fr"PID Controller, HToAATo4B ($\epsilon[t_0]={aa_c_pd[0]:.2f}\%$)")
     ax.plot(time_as, rel_to_t0(tt_c_dqn), color=colors_ad["ttbar"],
             label=fr"DQN, ttbar ($\epsilon[t_0]={tt_c_dqn[0]:.2f}\%$)", **DQN_STYLE)
     ax.plot(time_as, rel_to_t0(aa_c_dqn), color=colors_ad["HToAATo4B"], 
@@ -1549,10 +1525,10 @@ def main():
             label=fr"Constant Menu, ttbar ($\epsilon[t_0]={L_tt_as_const[0]:.2f}\%$)")
     ax.plot(time_as, rel_to_t0(L_aa_as_const), color=colors_ad["HToAATo4B"], **styles["Constant"],
             label=fr"Constant Menu, HToAATo4B ($\epsilon[t_0]={L_aa_as_const[0]:.2f}\%$)")
-    ax.plot(time_as, rel_to_t0(L_tt_as_pd), color=colors_ad["ttbar"], **styles["PD"],
-            label=fr"PD Controller, ttbar ($\epsilon[t_0]={L_tt_as_pd[0]:.2f}\%$)")
-    ax.plot(time_as, rel_to_t0(L_aa_as_pd), color=colors_ad["HToAATo4B"], **styles["PD"],
-            label=fr"PD Controller, HToAATo4B ($\epsilon[t_0]={L_aa_as_pd[0]:.2f}\%$)")
+    ax.plot(time_as, rel_to_t0(L_tt_as_pd), color=colors_ad["ttbar"], **styles["PID"],
+            label=fr"PID Controller, ttbar ($\epsilon[t_0]={L_tt_as_pd[0]:.2f}\%$)")
+    ax.plot(time_as, rel_to_t0(L_aa_as_pd), color=colors_ad["HToAATo4B"], **styles["PID"],
+            label=fr"PID Controller, HToAATo4B ($\epsilon[t_0]={L_aa_as_pd[0]:.2f}\%$)")
     ax.plot(time_as, rel_to_t0(L_tt_as_dqn), color=colors_ad["ttbar"], linewidth=2.2, linestyle="dashdot",
             label=fr"DQN, ttbar ($\epsilon[t_0]={L_tt_as_dqn[0]:.2f}\%$)")
     ax.plot(time_as, rel_to_t0(L_aa_as_dqn), color=colors_ad["HToAATo4B"], linewidth=2.2, linestyle="dashdot",
@@ -1679,13 +1655,13 @@ def main():
 
     # HT
     add_paper_row("HT", "Constant", r_const_ht_pct, L_tt_ht_const, L_aa_ht_const, Ht_const_hist)
-    add_paper_row("HT", "PD",       r_pd_ht_pct,    L_tt_ht_pd,    L_aa_ht_pd,    Ht_pd_hist)
+    add_paper_row("HT", "PID",       r_pd_ht_pct,    L_tt_ht_pd,    L_aa_ht_pd,    Ht_pd_hist)
     add_paper_row("HT", "DQN",      r_dqn_ht_pct,   L_tt_ht_dqn,   L_aa_ht_dqn,   Ht_dqn_hist)
     add_paper_row("HT", "DQN-F",    r_dqnf_ht_pct,  L_tt_ht_dqnf,  L_aa_ht_dqnf,  Ht_dqnf_hist)
 
     # AD/AS
     add_paper_row("AD", "Constant", r_const_as_pct, L_tt_as_const, L_aa_as_const, As_const_hist)
-    add_paper_row("AD", "PD",       r_pd_as_pct,    L_tt_as_pd,    L_aa_as_pd,    As_pd_hist)
+    add_paper_row("AD", "PID",       r_pd_as_pct,    L_tt_as_pd,    L_aa_as_pd,    As_pd_hist)
     add_paper_row("AD", "DQN",      r_dqn_as_pct,   L_tt_as_dqn,   L_aa_as_dqn,   As_dqn_hist)
     add_paper_row("AD", "DQN-F",    r_dqnf_as_pct,  L_tt_as_dqnf,  L_aa_as_dqnf,  As_dqnf_hist)
 
@@ -1709,7 +1685,7 @@ def main():
         x2, y2 = ecdf(e_dqn)
 
         fig, ax = plt.subplots(figsize=(7.5, 5.0))
-        ax.plot(x1, y1, linewidth=2.2, label="PD")
+        ax.plot(x1, y1, linewidth=2.2, label="PID")
         ax.plot(x2, y2, linewidth=2.2, label="DQN")
         ax.axvline(TOL_KHZ, linestyle="--", linewidth=1.6, label=f"Tolerance = {TOL_KHZ:.1f} kHz")
         ax.set_xlabel(r"$|r - r^*|$  [kHz]")
@@ -1734,7 +1710,7 @@ def main():
         w = 0.35
 
         fig, ax = plt.subplots(figsize=(7.5, 5.0))
-        ax.bar(x - w/2, pd_vals, width=w, label="PD")
+        ax.bar(x - w/2, pd_vals, width=w, label="PID")
         ax.bar(x + w/2, dqn_vals, width=w, label="DQN")
         ax.set_xticks(x)
         ax.set_xticklabels(labels)
@@ -1744,8 +1720,8 @@ def main():
         ax.legend(loc="best", frameon=True)
         _save(fig, outpath)
 
-    plot_inband_bars(sum_pd_ht, sum_dqn_ht, plots_dir / "inband_eff_bars_ht", "HT: in-band mean efficiency (PD vs DQN)")
-    plot_inband_bars(sum_pd_as, sum_dqn_as, plots_dir / "inband_eff_bars_as", "AS: in-band mean efficiency (PD vs DQN)")
+    plot_inband_bars(sum_pd_ht, sum_dqn_ht, plots_dir / "inband_eff_bars_ht", "HT: in-band mean efficiency (PID vs DQN)")
+    plot_inband_bars(sum_pd_as, sum_dqn_as, plots_dir / "inband_eff_bars_as", "AS: in-band mean efficiency (PID vs DQN)")
 
     # ---------------------------------------------------------
     # Extra Plot 3: Cut-step magnitude histogram (jitter) (PD vs DQN)
@@ -1754,7 +1730,7 @@ def main():
         dp = np.diff(np.asarray(cut_pd, dtype=np.float64))
         dd = np.diff(np.asarray(cut_dqn, dtype=np.float64))
         fig, ax = plt.subplots(figsize=(7.5, 5.0))
-        ax.hist(np.abs(dp), bins=30, alpha=0.55, label="PD")
+        ax.hist(np.abs(dp), bins=30, alpha=0.55, label="PID")
         ax.hist(np.abs(dd), bins=30, alpha=0.55, label="DQN")
         ax.set_xlabel(xlabel)
         ax.set_ylabel("Count")
@@ -1784,7 +1760,7 @@ def main():
 
         tgrid = np.linspace(0, 1, len(rpd))
         fig, ax = plt.subplots(figsize=(7.5, 5.0))
-        ax.plot(tgrid, running_mean_bool(in_pd, w=w), linewidth=2.2, label=f"PD (w={w})")
+        ax.plot(tgrid, running_mean_bool(in_pd, w=w), linewidth=2.2, label=f"PID (w={w})")
         ax.plot(tgrid, running_mean_bool(in_dq, w=w), linewidth=2.2, label=f"DQN (w={w})")
         ax.set_xlabel("Time (Fraction of Run)")
         ax.set_ylabel("Running in-band fraction")
@@ -1795,8 +1771,8 @@ def main():
         _save(fig, outbase)
 
 
-    plot_running_inband(R2_ht, R3_ht, plots_dir / "running_inband_ht", "HT: running in-band fraction (PD vs DQN)", w = 5)
-    plot_running_inband(R2_as, R3_as, plots_dir / "running_inband_as", "AS: running in-band fraction (PD vs DQN)", w = 5)
+    plot_running_inband(R2_ht, R3_ht, plots_dir / "running_inband_ht", "HT: running in-band fraction (PID vs DQN)", w = 5)
+    plot_running_inband(R2_as, R3_as, plots_dir / "running_inband_as", "AS: running in-band fraction (PID vs DQN)", w = 5)
 
     print("\nSaved to:", outdir)
     for p in sorted(outdir.glob("*.png")):
@@ -1818,9 +1794,9 @@ def main():
     )
 
     fig, ax = plt.subplots(figsize=(10, 5))
-    ax.plot(t_mid, auc_tt_pd,  label="AUROC TT vs BKG (PD)",  linewidth=2.0)
+    ax.plot(t_mid, auc_tt_pd,  label="AUROC TT vs BKG (PID)",  linewidth=2.0)
     ax.plot(t_mid, auc_tt_dqn, label="AUROC TT vs BKG (DQN)", linewidth=2.0)
-    ax.plot(t_mid, auc_aa_pd,  label="AUROC AA vs BKG (PD)",  linewidth=2.0)
+    ax.plot(t_mid, auc_aa_pd,  label="AUROC AA vs BKG (PID)",  linewidth=2.0)
     ax.plot(t_mid, auc_aa_dqn, label="AUROC AA vs BKG (DQN)", linewidth=2.0)
     ax.set_xlabel("Time (Fraction of Run)")
     ax.set_ylabel("AUROC")
@@ -1845,11 +1821,11 @@ def main():
     )
 
     fig, ax = plt.subplots(figsize=(10, 5))
-    ax.plot(t_mid2, fpr_pd,  label="BKG accept fraction (PD)",  linewidth=2.0)
+    ax.plot(t_mid2, fpr_pd,  label="BKG accept fraction (PID)",  linewidth=2.0)
     ax.plot(t_mid2, fpr_dqn, label="BKG accept fraction (DQN)", linewidth=2.0)
-    ax.plot(t_mid2, tpr_tt_pd,  label="TT accept fraction (PD)",  linewidth=2.0)
+    ax.plot(t_mid2, tpr_tt_pd,  label="TT accept fraction (PID)",  linewidth=2.0)
     ax.plot(t_mid2, tpr_tt_dqn, label="TT accept fraction (DQN)", linewidth=2.0)
-    ax.plot(t_mid2, tpr_aa_pd,  label="AA accept fraction (PD)",  linewidth=2.0)
+    ax.plot(t_mid2, tpr_aa_pd,  label="AA accept fraction (PID)",  linewidth=2.0)
     ax.plot(t_mid2, tpr_aa_dqn, label="AA accept fraction (DQN)", linewidth=2.0)
     ax.set_xlabel("Time (Fraction of Run)")
     ax.set_ylabel("Accept fraction at margin > 0")

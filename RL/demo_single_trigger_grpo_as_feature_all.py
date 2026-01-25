@@ -40,7 +40,6 @@ import random
 import csv
 import numpy as np
 from collections import deque, defaultdict
-import numpy as np
 from dataclasses import dataclass
 from pathlib import Path
 import matplotlib.pyplot as plt
@@ -189,7 +188,7 @@ def plot_early_abs_err_hist(grpo_ae, gfpo_ae, *, title, outpath, run_label):
     save_png(fig, str(outpath))
     plt.close(fig)
 
-PLOT_METHODS = ["Constant", "PID", "ADT", "DQN", "PPO", "GRPO", "GFPO-F", "GFPO-FR"]
+PLOT_METHODS = ["Constant", "PID", "ADT", "DQN", "DQN-F", "PPO", "GRPO", "GFPO-F", "GFPO-FR"]
 
 def select_plot_methods(d):
     """
@@ -313,31 +312,62 @@ class ConstantCtrl(BaseCtrl):
     def cut_value(self): return self.cut
 
 class PIDCtrl(BaseCtrl):
+    """
+    PID/PD baseline that updates ONCE per chunk (time chunk).
+    Holds cut constant within chunk; updates cut at end_chunk for next chunk.
+    Uses PD_controller2 for AD/AS.
+    """
     def __init__(self, name, init_cut, lo, hi):
         self.name = name
         self.cut = float(init_cut)
         self.err = 0.0
         self.lo, self.hi = float(lo), float(hi)
-    def step_chunk(self, bas_chunk):
-        bg = float(Sing_Trigger(bas_chunk, self.cut))
-        self.cut, self.err = PD_controller2(bg, self.err, self.cut)
-        self.cut = float(np.clip(self.cut, self.lo, self.hi))
-    def cut_value(self): return self.cut
+
+    def cut_value(self):
+        return self.cut
+
+    def step_micro(self, *, micro_global: int, **kwargs) -> CtrlOut:
+        # No-op inside chunk (cut held constant)
+        return CtrlOut(micro_global=micro_global)
+
+    def end_chunk(self, *, chunk: int, bas_j=None, bas_chunk=None, **kwargs):
+        # Accept either bas_j (per-chunk array) or bas_chunk (older name)
+        scores = bas_j if bas_j is not None else bas_chunk
+        if scores is None:
+            return
+
+        bg = float(Sing_Trigger(scores, self.cut))
+        cut_next, err_next = PD_controller2(bg, self.err, self.cut)  # AD/AS uses PD_controller2
+        self.cut = float(cut_next) #float(np.clip(cut_next, self.lo, self.hi))
+        self.err = float(err_next)
+
 
 class PIDCtrlHT(BaseCtrl):
+    """
+    Chunk-updated PID/PD baseline for HT.
+    Uses PD_controller1 for HT.
+    """
     def __init__(self, name, init_cut, lo, hi):
         self.name = name
         self.cut = float(init_cut)
         self.err = 0.0
         self.lo, self.hi = float(lo), float(hi)
 
-    def step_chunk(self, bht_chunk):
-        bg = float(Sing_Trigger(bht_chunk, self.cut))
-        self.cut, self.err = PD_controller1(bg, self.err, self.cut)   # HT uses PD_controller1
-        self.cut = float(np.clip(self.cut, self.lo, self.hi))
-
-    def cut_value(self): 
+    def cut_value(self):
         return self.cut
+
+    def step_micro(self, *, micro_global: int, **kwargs) -> CtrlOut:
+        return CtrlOut(micro_global=micro_global)
+
+    def end_chunk(self, *, chunk: int, bht_j=None, bht_chunk=None, **kwargs):
+        scores = bht_j if bht_j is not None else bht_chunk
+        if scores is None:
+            return
+
+        bg = float(Sing_Trigger(scores, self.cut))
+        cut_next, err_next = PD_controller1(bg, self.err, self.cut)  # HT uses PD_controller1
+        self.cut = float(cut_next) #float(np.clip(cut_next, self.lo, self.hi))
+        self.err = float(err_next)
     
 class DQNCtrl(BaseCtrl):
     def __init__(self, name, init_cut, lo, hi, *, agent, deltas, step, max_delta, as_mid, as_span,
@@ -524,6 +554,179 @@ class DQNCtrlHT(BaseCtrl):
         self.prev_bg = bg_after
         self.last_delta = dlt
         self.step_count += 1
+        return CtrlOut(micro_global=micro_global)
+
+class DQNFrozenCtrl(DQNCtrl):
+    """
+    DQN-F: train only on first N chunks; after that, stop pushing to replay + stop optimizer steps.
+    Rollout epsilon after freeze is args.dqn_f_eps (default greedy).
+    """
+    def __init__(self, *args, train_chunks: int, eps_after_freeze: float, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.train_chunks = int(train_chunks)
+        self.eps_after_freeze = float(eps_after_freeze)
+
+    def step_micro(self, *, bas_w, bnpv_w, bas_j, sas_tt, sas_aa, micro_global,
+                   chunk=None, grpo_samples=None, **kwargs):
+        ch = 0 if chunk is None else int(chunk)
+        train_mode = (ch < self.train_chunks)
+
+        bg_before = float(Sing_Trigger(bas_j, self.cut))
+        if self.prev_bg is None:
+            self.prev_bg = bg_before
+
+        self.err_i = update_err_i(self.err_i, bg_before, self.target)
+        dbgcut = d_bg_d_cut_norm(bas_j, self.cut, self.step, self.target)
+
+        obs = make_event_seq_as(
+            bas=bas_w, bnpv=bnpv_w,
+            bg_rate=bg_before, prev_bg_rate=self.prev_bg,
+            cut=self.cut,
+            as_mid=self.as_mid, as_span=self.as_span,
+            target=self.target, K=self.K,
+            last_delta=self.last_delta, max_delta=self.max_delta,
+            near_widths=self.near_widths,
+            step=self.step, tol=self.tol,
+            err_i=self.err_i, d_bg_d_cut=dbgcut
+        )
+
+        # eps schedule: normal DQN during training, fixed eps after freeze
+        if train_mode:
+            eps = max(self.eps_min, 1.0 * (self.eps_decay ** self.step_count))
+        else:
+            eps = self.eps_after_freeze
+
+        a = int(self.agent.act(obs, eps=eps))
+        dlt = float(self.deltas[a] * self.step)
+
+        sd = shield_delta(bg_before, self.target, self.tol, self.max_delta)
+        if sd is not None:
+            dlt = float(sd)
+
+        cut_next = float(np.clip(self.cut + dlt, self.lo, self.hi))
+        bg_after = float(Sing_Trigger(bas_j, cut_next))
+        tt_after = float(Sing_Trigger(sas_tt, cut_next))
+        aa_after = float(Sing_Trigger(sas_aa, cut_next))
+
+        dbgcut_next = d_bg_d_cut_norm(bas_j, cut_next, self.step, self.target)
+        obs_next = make_event_seq_as(
+            bas=bas_w, bnpv=bnpv_w,
+            bg_rate=bg_after, prev_bg_rate=bg_before,
+            cut=cut_next,
+            as_mid=self.as_mid, as_span=self.as_span,
+            target=self.target, K=self.K,
+            last_delta=dlt, max_delta=self.max_delta,
+            near_widths=self.near_widths,
+            step=self.step, tol=self.tol,
+            err_i=update_err_i(self.err_i, bg_after, self.target),
+            d_bg_d_cut=dbgcut_next,
+        )
+
+        r = float(SeqDQNAgent.compute_reward(
+            bg_rate=bg_after, target=self.target, tol=self.tol,
+            sig_rate_1=tt_after, sig_rate_2=aa_after,
+            delta_applied=dlt, max_delta=self.max_delta,
+            alpha=self.alpha, beta=self.beta,
+            prev_bg_rate=bg_before, gamma_stab=0.3
+        ))
+
+        # ONLY train during early chunks
+        if train_mode:
+            self.agent.buf.push(obs, a, r, obs_next, done=False)
+            for _ in range(self.train_steps_per_micro):
+                _ = self.agent.train_step()
+
+        # advance state always
+        self.cut = cut_next
+        self.prev_bg = bg_after
+        self.last_delta = dlt
+        self.step_count += 1
+
+        return CtrlOut(micro_global=micro_global)
+
+
+class DQNFrozenCtrlHT(DQNCtrlHT):
+    """
+    HT version of DQN-F.
+    """
+    def __init__(self, *args, train_chunks: int, eps_after_freeze: float, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.train_chunks = int(train_chunks)
+        self.eps_after_freeze = float(eps_after_freeze)
+
+    def step_micro(self, *, bht_w, bnpv_w, bht_j, sht_tt, sht_aa, micro_global,
+                   chunk=None, grpo_samples=None, **kwargs):
+        ch = 0 if chunk is None else int(chunk)
+        train_mode = (ch < self.train_chunks)
+
+        bg_before = float(Sing_Trigger(bht_j, self.cut))
+        if self.prev_bg is None:
+            self.prev_bg = bg_before
+
+        self.err_i = update_err_i(self.err_i, bg_before, self.target)
+        dbgcut = d_bg_d_cut_norm(bht_j, self.cut, self.step, self.target)
+
+        obs = make_event_seq_ht(
+            bht=bht_w, bnpv=bnpv_w,
+            bg_rate=bg_before, prev_bg_rate=self.prev_bg,
+            cut=self.cut,
+            ht_mid=self.ht_mid, ht_span=self.ht_span,
+            target=self.target, K=self.K,
+            last_delta=self.last_delta, max_delta=self.max_delta,
+            near_widths=self.near_widths,
+            step=self.step, tol=self.tol,
+            err_i=self.err_i, d_bg_d_cut=dbgcut
+        )
+
+        if train_mode:
+            eps = max(self.eps_min, 1.0 * (self.eps_decay ** self.step_count))
+        else:
+            eps = self.eps_after_freeze
+
+        a = int(self.agent.act(obs, eps=eps))
+        dlt = float(self.deltas[a] * self.step)
+
+        sd = shield_delta(bg_before, self.target, self.tol, self.max_delta)
+        if sd is not None:
+            dlt = float(sd)
+
+        cut_next = float(np.clip(self.cut + dlt, self.lo, self.hi))
+        bg_after = float(Sing_Trigger(bht_j, cut_next))
+        tt_after = float(Sing_Trigger(sht_tt, cut_next))
+        aa_after = float(Sing_Trigger(sht_aa, cut_next))
+
+        dbgcut_next = d_bg_d_cut_norm(bht_j, cut_next, self.step, self.target)
+        obs_next = make_event_seq_ht(
+            bht=bht_w, bnpv=bnpv_w,
+            bg_rate=bg_after, prev_bg_rate=bg_before,
+            cut=cut_next,
+            ht_mid=self.ht_mid, ht_span=self.ht_span,
+            target=self.target, K=self.K,
+            last_delta=dlt, max_delta=self.max_delta,
+            near_widths=self.near_widths,
+            step=self.step, tol=self.tol,
+            err_i=update_err_i(self.err_i, bg_after, self.target),
+            d_bg_d_cut=dbgcut_next,
+        )
+
+        r = float(SeqDQNAgent.compute_reward(
+            bg_rate=bg_after, target=self.target, tol=self.tol,
+            sig_rate_1=tt_after, sig_rate_2=aa_after,
+            delta_applied=dlt, max_delta=self.max_delta,
+            alpha=self.alpha, beta=self.beta,
+            prev_bg_rate=bg_before, gamma_stab=0.3
+        ))
+
+        if train_mode:
+            self.agent.buf.push(obs, a, r, obs_next, done=False)
+            for _ in range(self.train_steps_per_micro):
+                _ = self.agent.train_step()
+
+        self.cut = cut_next
+        self.prev_bg = bg_after
+        self.last_delta = dlt
+        self.step_count += 1
+
         return CtrlOut(micro_global=micro_global)
 
 
@@ -2279,8 +2482,8 @@ def build_series_from_chunk_rows(chunk_rows, trigger):
     return out
 
 # ----------------------------- legend styling -----------------------------
-LEGEND_FONTSIZE = 11
-LEGEND_TITLE_FONTSIZE = 11
+LEGEND_FONTSIZE = 13
+LEGEND_TITLE_FONTSIZE = 13
 
 def small_legend(ax, *, title=None, loc="best", ncol=1, **kwargs):
     """
@@ -2303,6 +2506,7 @@ def small_legend(ax, *, title=None, loc="best", ncol=1, **kwargs):
         markerscale=0.9,
         **kwargs,
     )
+
 def make_original_plots_for_trigger(series, *, trigger_name, fixed_cut, target, tol, plots_dir, run_label, w=3):
     if not series:
         return
@@ -2469,46 +2673,96 @@ def log_chunk_stats(*, chunk, trigger, method, cut, bg_pct, tt, aa, occ_mid, tar
                     tp_h4b = None, fn_h4b = None,
                     tpr_tt=None, precision_tt=None, f1_tt=None,
                     tpr_h4b=None, precision_h4b=None, f1_h4b=None):
+    # we only care about in band rates for signal efficiency
     bg_khz = float(bg_pct) * RATE_SCALE_KHZ
     target_khz = float(target) * RATE_SCALE_KHZ
     tol_khz = float(tol) * RATE_SCALE_KHZ
     abs_err_khz = abs(bg_khz - target_khz)
     inband = int(abs(float(bg_pct) - float(target)) <= float(tol))
+    
+    # mask signal efficiencies by inband
+    # tt_inband = (None if tt is None else (float(tt) if inband else None))
+    # aa_inband = (None if aa is None else (float(aa) if inband else None))
+
+    def mask_if_outband(x, cast=float):
+        """Return cast(x) if inband else None. Preserves 0.0 correctly."""
+        if x is None:
+            return None
+        return cast(x) if inband else None
 
     chunk_rows.append(dict(
+        # always log control / rate stats
         chunk=int(chunk),
-        trigger=str(trigger),     # "AS" or "HT"
+        trigger=str(trigger),
         method=str(method),
         cut=float(cut),
         bg_pct=float(bg_pct),
         bg_khz=float(bg_khz),
         abs_err_khz=float(abs_err_khz),
         inband=int(inband),
-        tt=float(tt),
-        aa=float(aa),
         occ_mid=float(occ_mid),
 
-        tp=(None if tp is None else int(tp)),
-        fp=(None if fp is None else int(fp)),
-        tn=(None if tn is None else int(tn)),
-        fn=(None if fn is None else int(fn)),
-        tpr=(None if tpr is None else float(tpr)),
-        fpr=(None if fpr is None else float(fpr)),
-        precision=(None if precision is None else float(precision)),
-        f1=(None if f1 is None else float(f1)),
-        tp_tt = (None if tp_tt is None else int(tp_tt)),
-        fn_tt = (None if fn_tt is None else int(fn_tt)),
-        tp_h4b = (None if tp_h4b is None else int(tp_h4b)),
-        fn_h4b = (None if fn_h4b is None else int(fn_h4b)),
+        # ONLY log signal stats if inband
+        tt=mask_if_outband(tt, float),
+        aa=mask_if_outband(aa, float),
 
-        tpr_tt=(None if tpr_tt is None else float(tpr_tt)),
-        precision_tt=(None if precision_tt is None else float(precision_tt)),
-        f1_tt=(None if f1_tt is None else float(f1_tt)),
+        tp=mask_if_outband(tp, int),
+        fp=mask_if_outband(fp, int),
+        tn=mask_if_outband(tn, int),
+        fn=mask_if_outband(fn, int),
 
-        tpr_h4b=(None if tpr_h4b is None else float(tpr_h4b)),
-        precision_h4b=(None if precision_h4b is None else float(precision_h4b)),
-        f1_h4b=(None if f1_h4b is None else float(f1_h4b)),
+        tpr=mask_if_outband(tpr, float),
+        fpr=mask_if_outband(fpr, float),
+        precision=mask_if_outband(precision, float),
+        f1=mask_if_outband(f1, float),
+
+        tp_tt=mask_if_outband(tp_tt, int),
+        fn_tt=mask_if_outband(fn_tt, int),
+        tp_h4b=mask_if_outband(tp_h4b, int),
+        fn_h4b=mask_if_outband(fn_h4b, int),
+
+        tpr_tt=mask_if_outband(tpr_tt, float),
+        precision_tt=mask_if_outband(precision_tt, float),
+        f1_tt=mask_if_outband(f1_tt, float),
+
+        tpr_h4b=mask_if_outband(tpr_h4b, float),
+        precision_h4b=mask_if_outband(precision_h4b, float),
+        f1_h4b=mask_if_outband(f1_h4b, float),
     ))
+    # chunk_rows.append(dict(
+    #     chunk=int(chunk),
+    #     trigger=str(trigger),     # "AS" or "HT"
+    #     method=str(method),
+    #     cut=float(cut),
+    #     bg_pct=float(bg_pct),
+    #     bg_khz=float(bg_khz),
+    #     abs_err_khz=float(abs_err_khz),
+    #     inband=int(inband),
+    #     tt=float(tt_inband) if tt_inband else None, #make it inband ttbar
+    #     aa=float(aa_inband) if aa_inband else None, #make it inband aa
+    #     occ_mid=float(occ_mid),
+
+    #     tp=(None if tp is None else int(tp)),
+    #     fp=(None if fp is None else int(fp)),
+    #     tn=(None if tn is None else int(tn)),
+    #     fn=(None if fn is None else int(fn)),
+    #     tpr=(None if tpr is None else float(tpr)),
+    #     fpr=(None if fpr is None else float(fpr)),
+    #     precision=(None if precision is None else float(precision)),
+    #     f1=(None if f1 is None else float(f1)),
+    #     tp_tt = (None if tp_tt is None else int(tp_tt)),
+    #     fn_tt = (None if fn_tt is None else int(fn_tt)),
+    #     tp_h4b = (None if tp_h4b is None else int(tp_h4b)),
+    #     fn_h4b = (None if fn_h4b is None else int(fn_h4b)),
+
+    #     tpr_tt=(None if tpr_tt is None else float(tpr_tt)),
+    #     precision_tt=(None if precision_tt is None else float(precision_tt)),
+    #     f1_tt=(None if f1_tt is None else float(f1_tt)),
+
+    #     tpr_h4b=(None if tpr_h4b is None else float(tpr_h4b)),
+    #     precision_h4b=(None if precision_h4b is None else float(precision_h4b)),
+    #     f1_h4b=(None if f1_h4b is None else float(f1_h4b)),
+    # ))
 
 def write_chunk_stats_csv(path: Path):
     if not chunk_rows:
@@ -2521,6 +2775,8 @@ def write_chunk_stats_csv(path: Path):
         w = csv.DictWriter(f, fieldnames=cols)
         w.writeheader()
         w.writerows(chunk_rows)
+
+        
 def _safe_mean(x):
     x = np.asarray(x, dtype=np.float64)
     x = x[np.isfinite(x)]
@@ -2557,6 +2813,9 @@ def _summarize_window(rows, *, target_pct, tol_pct):
     abs_err_pct = np.abs(err_pct)
 
     inband_mask = abs_err_pct <= float(tol_pct)
+
+    tt_inband = tt[inband_mask]
+    aa_inband = aa[inband_mask]
 
     # in kHz space
     target_khz = float(target_pct) * RATE_SCALE_KHZ
@@ -3213,7 +3472,7 @@ def write_paper_table(rows, out_csv: Path, out_tex: Path, target_pct, tol_pct):
         row.append(m)
 
         for key, nd in [
-            ("MAE", 2),
+            ("MAE", 3),
             ("P95_abs_err", 3),
             ("InBand", 3),
             ("UpFrac", 3),
@@ -3245,6 +3504,7 @@ def write_paper_table(rows, out_csv: Path, out_tex: Path, target_pct, tol_pct):
     lines.append(r"\end{table}")
 
     out_tex.write_text("\n".join(lines) + "\n")
+
 def write_confusion_split_tables_tex(chunk_rows, out_tt_tex: Path, out_h4b_tex: Path):
     """
     Writes two LaTeX tables (micro-averaged over chunks by summing counts):
@@ -3342,111 +3602,7 @@ def write_confusion_split_tables_tex(chunk_rows, out_tt_tex: Path, out_h4b_tex: 
     _write_one(out_tt_tex, which="tt")
     _write_one(out_h4b_tex, which="h4b")
 
-def write_signal_confusion_table(rows, *, out_csv: Path, out_tex: Path, which="tt"):
-    """
-    which: "tt" or "h4b"
-    """
-    assert which in ("tt", "h4b")
-    if not rows:
-        return
 
-    out_csv.parent.mkdir(parents=True, exist_ok=True)
-
-    if which == "tt":
-        TPk, FNk, TPRk, PREk, F1k = "TP_tt", "FN_tt", "TPR_tt", "Precision_tt", "F1_tt",
-        sig_label = r"$t\bar t$"
-    else:
-        TPk, FNk, TPRk, PREk, F1k = "TP_h4b", "FN_h4b", "TPR_h4b", "Precision_h4b", "F1_h4b"
-        sig_label = r"$h\to 4b$"
-
-    # ---------------- CSV ----------------
-    fieldnames = ["Trigger","Method","FP","TN","FPR", TPk, FNk, TPRk, PREk, F1k]
-    with open(out_csv, "w", newline="") as f:
-        w = csv.DictWriter(f, fieldnames=fieldnames)
-        w.writeheader()
-        for r in rows:
-            w.writerow({k: r.get(k, None) for k in fieldnames})
-
-    # ---------------- bold best per trigger ----------------
-    higher_better = {TPRk, PREk}
-    lower_better  = {"FPR"}
-
-    trigger_order = ["HT", "AD"]
-    method_order  = ["Constant", "PID", "ADT", "DQN", "PPO", "GRPO", "GFPO-F", "GFPO-FR"]
-    trig_rank = {t: i for i, t in enumerate(trigger_order)}
-    meth_rank = {m: i for i, m in enumerate(method_order)}
-
-    rows = sorted(rows, key=lambda r: (trig_rank.get(r["Trigger"], 10**9), meth_rank.get(r["Method"], 10**9)))
-
-    triggers = [t for t in trigger_order if any(rr["Trigger"] == t for rr in rows)]
-    triggers += [t for t in sorted(set(rr["Trigger"] for rr in rows)) if t not in triggers]
-
-    def _as_float(v):
-        try:
-            return float(v)
-        except Exception:
-            return np.nan
-
-    best = {tr: {} for tr in triggers}
-    for tr in triggers:
-        sub = [r for r in rows if r["Trigger"] == tr]
-        for k in higher_better:
-            vals = np.array([_as_float(x.get(k, None)) for x in sub], dtype=np.float64)
-            i = int(np.nanargmax(vals)) if np.any(np.isfinite(vals)) else 0
-            best[tr][k] = sub[i]["Method"]
-        for k in lower_better:
-            vals = np.array([_as_float(x.get(k, None)) for x in sub], dtype=np.float64)
-            i = int(np.nanargmin(vals)) if np.any(np.isfinite(vals)) else 0
-            best[tr][k] = sub[i]["Method"]
-
-    def fmt(v, nd=3):
-        v = _as_float(v)
-        return "nan" if not np.isfinite(v) else f"{v:.{nd}f}"
-
-    def maybe_bold(tr, method, key, s):
-        return (r"\textbf{" + s + "}") if best.get(tr, {}).get(key, None) == method else s
-
-    # ---------------- LaTeX ----------------
-    lines = []
-    lines += [
-        r"\begin{table}[t]",
-        r"\centering",
-        r"\scriptsize",
-        r"\setlength{\tabcolsep}{3.0pt}",
-        r"\renewcommand{\arraystretch}{1.05}",
-        r"\begin{tabular}{llrrcrrcc}",
-        r"\toprule",
-        rf"Trigger & Method & FP & TN & FPR$\downarrow$ & {TPk} & {FNk} & TPR$\uparrow$ & Prec.$\uparrow$ \\",
-        r"\midrule",
-    ]
-
-    cur_tr = None
-    for r in rows:
-        tr, m = r["Trigger"], r["Method"]
-        if cur_tr is None:
-            cur_tr = tr
-        elif tr != cur_tr:
-            lines.append(r"\midrule")
-            cur_tr = tr
-
-        fpr = maybe_bold(tr, m, "FPR", fmt(r.get("FPR", np.nan), nd=3))
-        tpr = maybe_bold(tr, m, TPRk, fmt(r.get(TPRk, np.nan), nd=3))
-        pre = maybe_bold(tr, m, PREk, fmt(r.get(PREk, np.nan), nd=3))
-
-        lines.append(
-            f"{tr} & {m} & "
-            f"{int(r.get('FP') or 0)} & {int(r.get('TN') or 0)} & {fpr} & "
-            f"{int(r.get(TPk) or 0)} & {int(r.get(FNk) or 0)} & {tpr} & {pre} \\\\"
-        )
-
-    lines += [
-        r"\bottomrule",
-        r"\end{tabular}",
-        rf"\caption{{Confusion-style summary for {sig_label}. Background FP/TN are shared; TP/FN are per-signal.}}",
-        rf"\label{{tab:confusion_{which}}}",
-        r"\end{table}",
-    ]
-    out_tex.write_text("\n".join(lines) + "\n")
 
 def build_paper_rows_from_chunk_rows(chunk_rows, *, target_pct, tol_pct):
     rows_out = []
@@ -3473,22 +3629,6 @@ def build_paper_rows_from_chunk_rows(chunk_rows, *, target_pct, tol_pct):
                 chunk_rows, trigger=trig, method=method
             ))
             rows_out.append(row)
-    return rows_out
-
-def build_signal_confusion_rows_from_chunk_rows(chunk_rows, *, triggers=("HT","AD")):
-    rows_out = []
-    for trig in triggers:
-        # get methods present for this trigger
-        methods = sorted({r.get("method") for r in chunk_rows if r.get("trigger") == trig and r.get("method") is not None})
-        for method in methods:
-            d = summarize_confusion_from_chunk_rows_split(chunk_rows, trigger=trig, method=method)
-            if not d:
-                continue
-            rows_out.append({
-                "Trigger": ("AD" if trig == "AD" else trig),
-                "Method": method,
-                **d
-            })
     return rows_out
 
 
@@ -3889,15 +4029,14 @@ def main():
     ap.add_argument("--score-dim-hint", type=int, default=2)
     ap.add_argument("--as-dim", type=int, default=2, choices=[1, 2, 4, 6, 8, 10, 12, 14, 16])
 
-    ap.add_argument("--as-deltas", type=str, default="-3,-1.5,0,1.5,3",choices=["-3,-1.5,0,1.5,3","-4,-2,-1,0,1,2,4"])
-    ap.add_argument("--as-step", type=float, default=0.5)
+    ap.add_argument("--as-deltas", type=str, default="-3,-1.5,0,1.5,3",choices=["-3,-1.5,0,1.5,3","-4,-2,-1,0,1,2,4","-3,-1.5,-1,0,1,1.5,3"])
+    ap.add_argument("--as-step", type=float, default=0.5, help = "AS delta step size multiply max of as-deltas above would be maximum delta ad trigger can take.")
 
     ap.add_argument("--print-keys", action="store_true")
     ap.add_argument("--print-keys-max", type=int, default=None)
 
     ap.add_argument("--window-events-chunk-size", type=int, default=3)
     ap.add_argument("--seq-len", type=int, default=128)
-    # ap.add_argument("--inner-stride", type=int, default=10000)
     # making it a sliding window
     ap.add_argument("--micro-stride", type=int, default=5000,
                 help="events per micro update step (small step)")
@@ -3906,10 +4045,11 @@ def main():
 
     # GRPO kwargs
     ap.add_argument("--train-every", type=int, default=50)
-    ap.add_argument("--temperature", type=float, default=1.0)
+    ap.add_argument("--ht-temperature", type=float, default=1.0) 
+    ap.add_argument("--as-temperature", type=float, default=1.0)
     ap.add_argument("--beta-kl", type=float, default=0.02)
     ap.add_argument("--ent-coef", type=float, default=0.01)
-    ap.add_argument("--lr", type=float, default=2e-4) #originally 3e-4
+    ap.add_argument("--grpo-lr", type=float, default=2e-4) #originally 3e-4
     ap.add_argument("--band-mult-ht", type=float, default=1.0,
                 help="HT candidate filter band: |bg-target| <= band-mult * tol (1.0 = exact tolerance)")
     ap.add_argument("--band-mult-as", type=float, default=1.0,
@@ -3924,8 +4064,10 @@ def main():
     ap.add_argument("--target", type=float, default=0.25)   # percent
     ap.add_argument("--tol", type=float, default=0.025,     # percent  (0.025% -> ±10kHz band)
                     help="tolerance in percent units; 0.025 corresponds to [90,110] kHz when target=0.25%")
-    ap.add_argument("--alpha", type=float, default=0.4)
-    ap.add_argument("--beta", type=float, default=0.2)
+    ap.add_argument("--alpha", type=float, default=0.3) #alpha ttbar focus
+    ap.add_argument("--beta", type=float, default=0.2, help="beta moving penalty weight") 
+    ap.add_argument("--violation-penalty", type=float, default=5.0,
+                    help="penalty weight for bg rate outside of target±tol band")
 
     # optional stabilization (AD-specific)
     ap.add_argument("--occ-pen", type=float, default=0.0,
@@ -3944,7 +4086,11 @@ def main():
     ap.add_argument("--ht-deltas", type=str, default="-2,-1,0,1,2")
     ap.add_argument("--ht-step", type=float, default=1.0)
 
-
+    # --- Frozen DQN baseline (DQN-F) ---
+    ap.add_argument("--dqn-f-train-chunks", type=int, default=1,
+                help="Train DQN-F only on the first N chunks, then freeze weights and rollout.")
+    ap.add_argument("--dqn-f-eps", type=float, default=0.0,
+                help="Epsilon used for DQN-F rollout AFTER freezing (default: greedy).")
 
     # GFPO (Greedy Feasible Policy Optimization) baseline
     ap.add_argument("--gfpo-filter", type=str, default="abs_err_topk", choices=["abs_err_topk", "feasible_first_sig", "both"]
@@ -3957,21 +4103,16 @@ def main():
 
     ap.add_argument("--gfpo-feas-mult", type=float, default=1.0,
                     help="feasibility band multiplier: |bg-target| <= mult*tol")
-    ap.add_argument("--gfpo-mix", type=float, default=0.80,
+    ap.add_argument("--gfpo-mix", type=float, default=0.20, #0.8 originally
                     help="GFPO ranking: mix*tt + (1-mix)*aa within feasible set")
 
 
-    # ap.add_argument(
-    #     "--baselines",
-    #     type=str,
-    #     default="constant,pid,adt,dqn,grpo,gfpo_f,gfpo_fr",
-    #     help="Comma-separated: constant,pid,dqn,grpo,gfpo_f,gfpo_fr"
-    # )
+
     ap.add_argument(
         "--baselines",
         type=str,
-        default="constant,pid,adt,dqn,ppo,grpo,gfpo_f,gfpo_fr",
-        help="Comma-separated: constant,pid,adt,dqn,ppo,grpo,gfpo_f,gfpo_fr"
+        default="constant,pid,adt,dqn,dqn_f,ppo,grpo,gfpo_f,gfpo_fr",
+        help="Comma-separated: constant,pid,adt,dqn,dqn_f,ppo,grpo,gfpo_f,gfpo_fr"
     )
 
 
@@ -4086,7 +4227,7 @@ def main():
 
     # fixed cut from calibration window
     win_lo = min(start_event, N - 1)
-    win_hi = min(start_event + (100000 if args.control == "MC" else 10000), N)
+    win_hi = min(start_event + (100000 if args.control == "MC" else 40000), N) #real data 200000 - 240000
     fixed_AS_cut = float(np.percentile(Bas[win_lo:win_hi], 99.75))
     if args.run_ht:
         fixed_Ht_cut = float(np.percentile(Bht[win_lo:win_hi], 99.75))
@@ -4167,7 +4308,7 @@ def main():
 
     # GRPO agent AS
     cfg = GRPOConfig(
-        lr=args.lr,
+        lr=args.grpo_lr,
         beta_kl=args.beta_kl,
         ent_coef=args.ent_coef,
         device="cpu",
@@ -4180,15 +4321,15 @@ def main():
         target=target,
         tol=tol,
         mode="lex",        # "lex" default; "lag" if adaptive lambda
-        mix=0.75, #increase for tt
+        mix=args.alpha, #increase for tt
         alpha_sig=1.0,
-        beta_move=0.02,
+        beta_move=args.beta,
         gamma_stab=0.25,
-        k_violate=5.0,
+        k_violate=args.violation_penalty,
         w_occ=float(args.occ_pen)
     ))
     gfpo_cfg_as = GRPOConfig(
-        lr=args.lr,
+        lr=args.grpo_lr,
         beta_kl=args.beta_kl,
         ent_coef=args.ent_coef,
         device="cpu",
@@ -4201,11 +4342,11 @@ def main():
         target=target,
         tol=tol,
         mode="lex",        # "lex" default; "lag" if adaptive lambda
-        mix=0.75, #increase for tt
+        mix=args.alpha, #increase for tt
         alpha_sig=1.0,
-        beta_move=0.02,
+        beta_move=args.beta,
         gamma_stab=0.25,
-        k_violate=5.0,
+        k_violate=args.violation_penalty,
         w_occ=float(args.occ_pen)
     ))
 
@@ -4249,7 +4390,21 @@ def main():
         eps_min=args.dqn_eps_min, eps_decay=args.dqn_eps_decay,
         train_steps_per_micro=args.dqn_train_steps_per_micro,
         alpha=args.alpha, beta=args.beta
-            ))
+        ))
+    
+    if "dqn_f" in BASELINES:
+        agent_dqnf_ad = SeqDQNAgent(seq_len=K, feat_dim=feat_dim_as, n_actions=len(AS_DELTAS), cfg=dqn_cfg, seed=SEED+7)
+
+        controllers_as.append(DQNFrozenCtrl(
+        "DQN-F", fixed_AS_cut, as_lo, as_hi,
+        agent=agent_dqnf_ad, deltas=AS_DELTAS, step=AS_STEP, max_delta=MAX_DELTA_AS,
+        as_mid=as_mid, as_span=as_span, near_widths=near_widths_as, K=K,
+        target=target, tol=tol,
+        eps_min=args.dqn_f_eps, eps_decay=1.0,  # no decay
+        train_steps_per_micro=0,               # no training during rollout
+        alpha=args.alpha, beta=args.beta, train_chunks=args.dqn_f_train_chunks, eps_after_freeze=args.dqn_f_eps
+        ))
+
     
     # --- ADT baseline (AS): DQN + action-hold + end-of-chunk updates ---
     if args.run_adt and ("adt" in BASELINES):
@@ -4287,7 +4442,7 @@ def main():
         agent=agent, deltas=AS_DELTAS, step=AS_STEP, max_delta=MAX_DELTA_AS,
         as_mid=as_mid, as_span=as_span, near_widths=near_widths_as, K=K,
         target=target, tol=tol,
-        train_every=args.train_every, temperature=args.temperature,
+        train_every=args.train_every, temperature=args.as_temperature,
         group_size_keep=args.group_size_keep
         ))
 
@@ -4300,7 +4455,7 @@ def main():
         deltas=AS_DELTAS, step=AS_STEP, max_delta=MAX_DELTA_AS,
         as_mid=as_mid, as_span=as_span, near_widths=near_widths_as, K=K,
         target=target, tol=tol,
-        train_every=args.train_every, temperature=args.temperature,
+        train_every=args.train_every, temperature=args.as_temperature,
         gfpo_filter="abs_err_topk",
         group_size_sample=args.group_size_sample, group_size_keep=args.group_size_keep,
         feas_mult=args.gfpo_feas_mult, mix=args.gfpo_mix,
@@ -4315,7 +4470,7 @@ def main():
         deltas=AS_DELTAS, step=AS_STEP, max_delta=MAX_DELTA_AS,
         as_mid=as_mid, as_span=as_span, near_widths=near_widths_as, K=K,
         target=target, tol=tol,
-        train_every=args.train_every, temperature=args.temperature,
+        train_every=args.train_every, temperature=args.as_temperature,
         gfpo_filter="feasible_first_sig",
         group_size_sample=args.group_size_sample, group_size_keep=args.group_size_keep,
         feas_mult=args.gfpo_feas_mult, mix=args.gfpo_mix,
@@ -4323,29 +4478,8 @@ def main():
         ))
 
     if "ppo" in BASELINES:
-        # tmp_bas = Bas[win_lo:win_lo + min(args.micro_window, win_hi - win_lo)]
-        # tmp_npv = Bnpv[win_lo:win_lo + min(args.micro_window, win_hi - win_lo)]
-        # bg0 = float(Sing_Trigger(tmp_bas, fixed_AS_cut))
-        # tmp_obs = make_event_seq_as(
-        #     bas=tmp_bas[:args.seq_len], bnpv=tmp_npv[:args.seq_len],
-        #     bg_rate=bg0, prev_bg_rate=bg0,
-        #     cut=float(fixed_AS_cut),
-        #     as_mid=as_mid, as_span=as_span,
-        #     target=target, K=10,
-        #     last_delta=0.0, max_delta=max(abs(AS_DELTAS)) * float(args.as_step),
-        #     near_widths=[0.25, 0.5, 1.0],
-        #     step=float(args.as_step), tol=tol,
-        #     err_i=0.0, d_bg_d_cut=0.0
-        # )
-        # ppo_obs_dim = int(np.asarray(tmp_obs, dtype=np.float32).size)
         print("feat_dim_as for PPO:", feat_dim_as)
         ppo_cfg_as = SeqPPOConfig(
-            # lr=3e-4,
-            # # train_iters=10,
-            # target_kl=0.02,
-            # ent_coef=0.01,
-            # vf_coef=0.5,
-            # max_grad_norm=0.5,
             feat_dim=feat_dim_as,
             n_actions=len(AS_DELTAS),
         )
@@ -4370,7 +4504,7 @@ def main():
                 tol=tol,
                 alpha=args.alpha,
                 beta=args.beta,
-                ppo_temperature=1.0,
+                ppo_temperature=args.as_temperature,
         )
         )
 
@@ -4442,6 +4576,18 @@ def main():
             train_steps_per_micro=args.dqn_train_steps_per_micro,
             alpha=args.alpha, beta=args.beta
             ))
+        if "dqn_f" in BASELINES:
+            agent_dqnf_ht = SeqDQNAgent(seq_len=K, feat_dim=feat_dim_ht, n_actions=len(HT_DELTAS), cfg=dqn_ht_cfg, seed=SEED+11)
+
+            controllers_ht.append(DQNFrozenCtrlHT(
+            "DQN-F", fixed_Ht_cut, ht_lo, ht_hi,
+            agent=agent_dqnf_ht, deltas=HT_DELTAS, step=HT_STEP, max_delta=MAX_DELTA_HT,
+            ht_mid=ht_mid, ht_span=ht_span, near_widths=near_widths_ht, K=K,
+            target=target, tol=tol,
+            eps_min=args.dqn_f_eps, eps_decay=1.0,  # no decay
+            train_steps_per_micro=0,               # no training during rollout
+            alpha=args.alpha, beta=args.beta, train_chunks=args.dqn_f_train_chunks, eps_after_freeze=args.dqn_f_eps
+            ))
         
         # --- ADT baseline (HT) ---
         if args.run_adt and ("adt" in BASELINES):
@@ -4475,7 +4621,7 @@ def main():
         
         if "grpo" in BASELINES:
             cfg_ht = GRPOConfig(
-                lr=args.lr, beta_kl=args.beta_kl, ent_coef=args.ent_coef,
+                lr=args.grpo_lr, beta_kl=args.beta_kl, ent_coef=args.ent_coef,
                 device="cpu", batch_size=256, train_epochs=2, ref_update_interval=200,
             )
             agent_ht = GRPOAgent(
@@ -4485,11 +4631,11 @@ def main():
                 target=target,
                 tol=tol,
                 mode="lex",        # "lex" recommended
-                mix=0.75,
+                mix=args.alpha, #increase for tt
                 alpha_sig=1.0,
-                beta_move=0.02,
+                beta_move=args.beta,
                 gamma_stab=0.25,
-                k_violate=5.0,
+                k_violate=args.violation_penalty,
                 w_occ=float(args.occ_pen)
                 )
             )
@@ -4498,7 +4644,7 @@ def main():
             agent=agent_ht, deltas=HT_DELTAS, step=HT_STEP, max_delta=MAX_DELTA_HT,
             ht_mid=ht_mid, ht_span=ht_span, near_widths=near_widths_ht, K=K,
             target=target, tol=tol,
-            train_every=args.train_every, temperature=args.temperature,
+            train_every=args.train_every, temperature=args.ht_temperature,
             group_size_keep=args.group_size_keep
             ))
 
@@ -4511,7 +4657,7 @@ def main():
                 deltas=HT_DELTAS, step=HT_STEP, max_delta=MAX_DELTA_HT,
                 ht_mid=ht_mid, ht_span=ht_span, near_widths=near_widths_ht, K=K,
                 target=target, tol=tol,
-                train_every=args.train_every, temperature=args.temperature,
+                train_every=args.train_every, temperature=args.ht_temperature,
                 gfpo_filter="abs_err_topk",
                 group_size_sample=args.group_size_sample, group_size_keep=args.group_size_keep,
                 feas_mult=args.gfpo_feas_mult, mix=args.gfpo_mix,
@@ -4526,7 +4672,7 @@ def main():
                 deltas=HT_DELTAS, step=HT_STEP, max_delta=MAX_DELTA_HT,
                 ht_mid=ht_mid, ht_span=ht_span, near_widths=near_widths_ht, K=K,
                 target=target, tol=tol,
-                train_every=args.train_every, temperature=args.temperature,
+                train_every=args.train_every, temperature=args.ht_temperature,
                 gfpo_filter="feasible_first_sig",
                 group_size_sample=args.group_size_sample, group_size_keep=args.group_size_keep,
                 feas_mult=args.gfpo_feas_mult, mix=args.gfpo_mix,
@@ -4551,7 +4697,7 @@ def main():
                 ht_mid=ht_mid, ht_span=ht_span,
                 near_widths=near_widths_ht, K=K,
                 target=target, tol=tol,
-                alpha=args.alpha, beta=args.beta
+                alpha=args.alpha, beta=args.beta, ppo_temperature=args.ht_temperature
             ))
 
         
@@ -4573,7 +4719,7 @@ def main():
 
     if args.run_ht:
         gfpo_cfg_ht = GRPOConfig(
-            lr=args.lr, beta_kl=args.beta_kl, ent_coef=args.ent_coef,
+            lr=args.grpo_lr, beta_kl=args.beta_kl, ent_coef=args.ent_coef,
             device="cpu", batch_size=256, train_epochs=2, ref_update_interval=200,
         )
 
@@ -4584,11 +4730,11 @@ def main():
                 target=target,
                 tol=tol,
                 mode="lex",        # "lex" recommended
-                mix=0.75,
+                mix=args.alpha, #increase for tt
                 alpha_sig=1.0,
-                beta_move=0.02,
+                beta_move=args.beta,
                 gamma_stab=0.25,
-                k_violate=5.0,
+                k_violate=args.violation_penalty,
                 w_occ=float(args.occ_pen)
             )
         )
@@ -4747,8 +4893,8 @@ def main():
             bnpv_j = bnpv_eval
 
             for ctrl in controllers_as:
-            # only micro-step for methods that actually update on micro
-                if ctrl.name in ("DQN", "ADT", "GRPO", "GFPO-F", "GFPO-FR", "PPO"):
+                # only micro-step for methods that actually update on micro
+                if ctrl.name in ("DQN", "DQN-F", "ADT", "GRPO", "GFPO-F", "GFPO-FR", "PPO"):
                     out = ctrl.step_micro(
                         chunk=t,
                         bas_w=bas_w, bnpv_w=bnpv_w,
@@ -4769,7 +4915,7 @@ def main():
                 bht_j = Bht[idx_eval]
 
                 for ctrl in controllers_ht:
-                    if ctrl.name in ("DQN", "ADT", "GRPO", "GFPO-F", "GFPO-FR", "PPO"):
+                    if ctrl.name in ("DQN", "DQN-F", "ADT", "GRPO", "GFPO-F", "GFPO-FR", "PPO"):
                         out = ctrl.step_micro(
                             chunk=t,
                             bht_w=bht_w, bnpv_w=bnpv_w_ht,
@@ -4801,13 +4947,8 @@ def main():
         # ============================
         # CHUNK-LEVEL logging (ONCE per chunk)
         # ============================
-        
         logs_by_method = {}
         # PID chunk update happens once per chunk
-        for ctrl in controllers_as:
-            if ctrl.name == "PID":
-                ctrl.step_chunk(bas)
-
         # Now log chunk metrics for ALL methods
         for ctrl in controllers_as:
             cut = ctrl.cut_value()
@@ -4828,6 +4969,7 @@ def main():
                 tpr_tt=cm["tpr_tt"], precision_tt=cm["precision_tt"], f1_tt=cm["f1_tt"],
                 tpr_h4b=cm["tpr_h4b"], precision_h4b=cm["precision_h4b"], f1_h4b=cm["f1_h4b"],
             )
+            ctrl.end_chunk(chunk=t, bas_j=bas) 
 
         # AD score distribution for this chunk
         h_as, _ = np.histogram(bas, bins=as_edges, density=True)
@@ -4835,14 +4977,8 @@ def main():
         as_stats.append(_score_chunk_stats(bas))
 
   
-
         # --- HT chunk-level logs (ONLY if enabled --run-ht) ---
         if args.run_ht:
-
-            for ctrl in controllers_ht:
-                if ctrl.name == "PID":
-                    ctrl.step_chunk(bht)
-
             for ctrl in controllers_ht:
                 cut = ctrl.cut_value()
                 bg = float(Sing_Trigger(bht, cut))
@@ -4862,6 +4998,9 @@ def main():
                     tp_h4b=cm["tp_h4b"], fn_h4b=cm["fn_h4b"], precision_h4b=cm["precision_h4b"],
                     f1_h4b=cm["f1_h4b"],
                 )
+                ctrl.end_chunk(chunk=t, bht_j=bht)   # HT PID
+
+
 
             tt_ht_const = Sing_Trigger(sht_tt, fixed_Ht_cut)
             aa_ht_const = Sing_Trigger(sht_aa, fixed_Ht_cut)
@@ -4908,7 +5047,6 @@ def main():
 
     write_chunk_stats_csv(tables_dir / "chunk_stats.csv")
 
-    as_series = build_series_from_chunk_rows(chunk_rows, trigger="AD")
     make_original_plots_for_trigger(
         as_series,
         trigger_name="AD",
@@ -4946,20 +5084,6 @@ def main():
         out_h4b_tex=tables_dir / "confusion_h4b.tex",
     )
 
-    # rows_split = build_signal_confusion_rows_from_chunk_rows(chunk_rows, triggers=("HT","AD"))
-
-    # write_signal_confusion_table(
-    #     rows_split,
-    #     out_csv=tables_dir / "confusion_tt.csv",
-    #     out_tex=tables_dir / "confusion_tt.tex",
-    #     which="tt",
-    # )
-    # write_signal_confusion_table(
-    #     rows_split,
-    #     out_csv=tables_dir / "confusion_h4b.csv",
-    #     out_tex=tables_dir / "confusion_h4b.tex",
-    #     which="h4b",
-    # )   
 
     tag = _run_tag(args, target, tol)
 
@@ -5014,21 +5138,6 @@ def main():
 
     # HT (optional)
     if args.run_ht:
-        # ht_series = build_series_from_chunk_rows(chunk_rows, trigger="HT")
-        # for method, s in ht_series.items():
-        #     metrics = summarize_paper_table(
-        #     r_pct=s["bg_pct"],
-        #     s_tt=s["tt"],
-        #     s_aa=s["aa"],
-        #     cut_hist=s["cut"],
-        #     target_pct=target,
-        #     tol_pct=tol,
-        #     )
-        #     paper_rows.append({
-        #     "Trigger": "HT",
-        #     "Method": method,
-        #     **metrics
-        #     })
         # build per-trigger in-band eff dicts: method -> {"tt":..., "h_to_4b":...}
         def _inband_eff(series):
             series = select_plot_methods(series)
@@ -5051,6 +5160,14 @@ def main():
             ad = eff_ad.get(m, {}).get("h_to_4b", np.nan)
             ht = eff_ht.get(m, {}).get("h_to_4b", np.nan)
             print(f"{m:<9}  {ad:8.4f}  {ht:8.4f}")
+        # Print a quick comparison table (ttbar)
+        print("\nMean in-band ttbar efficiency (AD vs HT)")
+        print("Method     AD(ttbar)   HT(ttbar)")
+        for m in PLOT_METHODS:
+            ad = eff_ad.get(m, {}).get("tt", np.nan)
+            ht = eff_ht.get(m, {}).get("tt", np.nan)
+            print(f"{m:<9}  {ad:8.4f}  {ht:8.4f}")
+
         # ttbar plot (grouped by trigger)
         plot_inband_eff_grouped_by_trigger(
             eff_ad, eff_ht,
