@@ -4066,7 +4066,7 @@ def main():
                     help="tolerance in percent units; 0.025 corresponds to [90,110] kHz when target=0.25%")
     ap.add_argument("--alpha", type=float, default=0.3) #alpha ttbar focus
     ap.add_argument("--beta", type=float, default=0.2, help="beta moving penalty weight") 
-    ap.add_argument("--violation-penalty", type=float, default=5.0,
+    ap.add_argument("--violation-penalty", type=float, default=1.0,
                     help="penalty weight for bg rate outside of target±tol band")
 
     # optional stabilization (AD-specific)
@@ -4098,8 +4098,8 @@ def main():
                         "feasible_first_sig   : feasible-first (|bg-target|<=feas_mult*tol), " \
                         "then rank by mix*tt+(1-mix)*aa; pad with closest if needed" \
                             "both=runs both.")
-    ap.add_argument("--group-size-keep", type=int, default=16, choices=[16, 32]) 
-    ap.add_argument("--group-size-sample", type=int, default=32)
+    ap.add_argument("--group-size-keep", type=int, default=16, choices=[16, 32, 64, 128]) 
+    ap.add_argument("--group-size-sample", type=int, default=32, choices=[16, 32, 64, 128, 256])
 
     ap.add_argument("--gfpo-feas-mult", type=float, default=1.0,
                     help="feasibility band multiplier: |bg-target| <= mult*tol")
