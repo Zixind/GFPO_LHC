@@ -2,7 +2,7 @@
 
 For Control-based methods, please refer: https://github.com/Shaghayegh-E/Adaptive-ParticlePhysics-Triggers
 
-This github is a follow-up on RL methods for LHC triggers.
+This repo is a follow-up on RL methods for LHC triggers.
 
 ## Datasets
 
