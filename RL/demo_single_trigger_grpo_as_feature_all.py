@@ -73,6 +73,8 @@ def compute_micro_action_entropy(samples, *, trigger, method, target, tol, kept_
       - normalized entropy of sampled actions (0..1)
       - feasible ratio among considered candidates
       - reward std among considered candidates (proxy for advantage signal)
+    - Near 1 means high entropy actions are spread out and exploratory.
+    - Near 0 means low entropy, actions are concentrated on a few choices.
     """
     from collections import defaultdict
     by_micro = defaultdict(list)
@@ -1314,7 +1316,7 @@ class GRPOCtrl(BaseCtrl):
     Plain GRPO: sample G actions, train on all, execute best reward.
     """
     def __init__(self, name, init_cut, lo, hi, *, agent, deltas, step, max_delta, as_mid, as_span,
-                 near_widths, K, target, tol, train_every, temperature, group_size_keep: int):
+                 near_widths, K, target, tol, train_every, temperature, signal_multiplier, group_size_keep: int):
         self.name = name
         self.cut = float(init_cut)
         self.lo, self.hi = float(lo), float(hi)
@@ -1334,6 +1336,7 @@ class GRPOCtrl(BaseCtrl):
         self.err_i = 0.0
         self.micro_counter = 0
         self.group_size_keep = int(group_size_keep)
+        self.signal_multiplier = signal_multiplier
 
     def cut_value(self): return self.cut
 
@@ -1374,7 +1377,7 @@ class GRPOCtrl(BaseCtrl):
             r = float(self.agent.compute_reward(
                 bg_after=bg_after, tt_after=tt_after, aa_after=aa_after,
                 delta_applied=dlt, max_delta=self.max_delta,
-                prev_bg=bg_before, occ_mid=occ_mid, update_dual=False
+                prev_bg=bg_before, occ_mid=occ_mid, update_dual=False, signal_multiplier = self.signal_multiplier
             ))
             cand_r[k] = r
 
@@ -1411,7 +1414,7 @@ class GRPOCtrl(BaseCtrl):
         r_exec = float(self.agent.compute_reward(
             bg_after=bg_after, tt_after=tt_after, aa_after=aa_after,
             delta_applied=d_exec, max_delta=self.max_delta,
-            prev_bg=bg_before, occ_mid=occ_mid, update_dual=True
+            prev_bg=bg_before, occ_mid=occ_mid, update_dual=True, signal_multiplier = self.signal_multiplier
         ))
 
         if grpo_samples is not None:
@@ -1477,7 +1480,7 @@ class GRPOFilterCtrl(GRPOCtrl):
             r = float(self.agent.compute_reward(
                 bg_after=bg_after, tt_after=tt_after, aa_after=aa_after,
                 delta_applied=dlt, max_delta=self.max_delta,
-                prev_bg=bg_before, occ_mid=occ_mid, update_dual=False
+                prev_bg=bg_before, occ_mid=occ_mid, update_dual=False, signal_multiplier=self.signal_multiplier
             ))
             cand_r[k] = r
             cand_bg[k] = bg_after
@@ -1544,7 +1547,7 @@ class GRPOFilterCtrl(GRPOCtrl):
         r_exec = float(self.agent.compute_reward(
             bg_after=bg_after, tt_after=tt_after, aa_after=aa_after,
             delta_applied=d_exec, max_delta=self.max_delta,
-            prev_bg=bg_before, occ_mid=occ_mid, update_dual=True
+            prev_bg=bg_before, occ_mid=occ_mid, update_dual=True, signal_multiplier=self.signal_multiplier
         ))
 
         if grpo_samples is not None:
@@ -1622,7 +1625,7 @@ class GFPOCtrl(GRPOCtrl):
             r_raw = float(self.agent.compute_reward(
                 bg_after=bg_after, tt_after=tt_after, aa_after=aa_after,
                 delta_applied=dlt, max_delta=self.max_delta,
-                prev_bg=bg_before, occ_mid=occ_mid, update_dual=False
+                prev_bg=bg_before, occ_mid=occ_mid, update_dual=False, signal_multiplier=self.signal_multiplier
             ))
 
             abs_err = abs(bg_after - self.target)
@@ -1695,7 +1698,7 @@ class GFPOCtrl(GRPOCtrl):
         r_exec = float(self.agent.compute_reward(
             bg_after=bg_after, tt_after=tt_after, aa_after=aa_after,
             delta_applied=d_exec, max_delta=self.max_delta,
-            prev_bg=bg_before, occ_mid=occ_mid, update_dual=True
+            prev_bg=bg_before, occ_mid=occ_mid, update_dual=True, signal_multiplier=self.signal_multiplier
         ))
 
         if grpo_samples is not None:
@@ -1731,7 +1734,7 @@ class GRPOCtrlHT(BaseCtrl):
     HT version of GRPOCtrl (same logic; uses make_event_seq_ht and HT arrays).
     """
     def __init__(self, name, init_cut, lo, hi, *, agent, deltas, step, max_delta,
-                 ht_mid, ht_span, near_widths, K, target, tol, train_every, temperature, group_size_keep: int):
+                 ht_mid, ht_span, near_widths, K, target, tol, train_every, temperature, signal_multiplier, group_size_keep: int):
         self.name = name
         self.cut = float(init_cut)
         self.lo, self.hi = float(lo), float(hi)
@@ -1751,6 +1754,7 @@ class GRPOCtrlHT(BaseCtrl):
         self.err_i = 0.0
         self.micro_counter = 0
         self.group_size_keep = int(group_size_keep)
+        self.signal_multiplier = signal_multiplier
 
     def cut_value(self): return self.cut
 
@@ -1791,7 +1795,7 @@ class GRPOCtrlHT(BaseCtrl):
             r = float(self.agent.compute_reward(
                 bg_after=bg_after, tt_after=tt_after, aa_after=aa_after,
                 delta_applied=dlt, max_delta=self.max_delta,
-                prev_bg=bg_before, occ_mid=occ_mid, update_dual=False
+                prev_bg=bg_before, occ_mid=occ_mid, update_dual=False, signal_multiplier=self.signal_multiplier
             ))
             cand_r[k] = r
 
@@ -1828,7 +1832,7 @@ class GRPOCtrlHT(BaseCtrl):
         r_exec = float(self.agent.compute_reward(
             bg_after=bg_after, tt_after=tt_after, aa_after=aa_after,
             delta_applied=d_exec, max_delta=self.max_delta,
-            prev_bg=bg_before, occ_mid=occ_mid, update_dual=True
+            prev_bg=bg_before, occ_mid=occ_mid, update_dual=True, signal_multiplier=self.signal_multiplier
         ))
 
         if grpo_samples is not None:
@@ -1893,7 +1897,7 @@ class GRPOFilterCtrlHT(GRPOCtrlHT):
             r = float(self.agent.compute_reward(
                 bg_after=bg_after, tt_after=tt_after, aa_after=aa_after,
                 delta_applied=dlt, max_delta=self.max_delta,
-                prev_bg=bg_before, occ_mid=occ_mid, update_dual=False
+                prev_bg=bg_before, occ_mid=occ_mid, update_dual=False, signal_multiplier=self.signal_multiplier
             ))
             cand_r[k] = r
             cand_bg[k] = bg_after
@@ -1955,7 +1959,7 @@ class GRPOFilterCtrlHT(GRPOCtrlHT):
         r_exec = float(self.agent.compute_reward(
             bg_after=bg_after, tt_after=tt_after, aa_after=aa_after,
             delta_applied=d_exec, max_delta=self.max_delta,
-            prev_bg=bg_before, occ_mid=occ_mid, update_dual=True
+            prev_bg=bg_before, occ_mid=occ_mid, update_dual=True, signal_multiplier=self.signal_multiplier
         ))
 
         if grpo_samples is not None:
@@ -2032,7 +2036,7 @@ class GFPOCtrlHT(GRPOCtrlHT):
             r_raw = float(self.agent.compute_reward(
                 bg_after=bg_after, tt_after=tt_after, aa_after=aa_after,
                 delta_applied=dlt, max_delta=self.max_delta,
-                prev_bg=bg_before, occ_mid=occ_mid, update_dual=False
+                prev_bg=bg_before, occ_mid=occ_mid, update_dual=False, signal_multiplier=self.signal_multiplier
             ))
 
             abs_err = abs(bg_after - self.target)
@@ -2101,7 +2105,7 @@ class GFPOCtrlHT(GRPOCtrlHT):
         r_exec = float(self.agent.compute_reward(
             bg_after=bg_after, tt_after=tt_after, aa_after=aa_after,
             delta_applied=d_exec, max_delta=self.max_delta,
-            prev_bg=bg_before, occ_mid=occ_mid, update_dual=True
+            prev_bg=bg_before, occ_mid=occ_mid, update_dual=True, signal_multiplier=self.signal_multiplier
         ))
 
         if grpo_samples is not None:
@@ -2274,7 +2278,7 @@ def _score_chunk_stats(x):
 
 def plot_inband_eff_grouped_by_trigger(eff_ad, eff_ht, *, signal_key, signal_label,
                                        outpath, run_label,
-                                       trigger_order=("HT", "AD")):
+                                       trigger_order=("HT", "AD"), control = "MC"):
     """
     Grouped bars like the CMS figure:
       x-axis: triggers (AD Trigger, HT Trigger)
@@ -2322,10 +2326,16 @@ def plot_inband_eff_grouped_by_trigger(eff_ad, eff_ht, *, signal_key, signal_lab
 
     # start y-axis at 80 for ttbar
     if signal_key == "tt":
-        ax.set_ylim(bottom=85)          # keep top auto
+        if control == "MC":
+            ax.set_ylim(bottom=85)          # keep top auto
         # or: ax.set_ylim(80, 100)       # if want fixed top
+        else:
+            ax.set_ylim(bottom=70)          # keep top auto
     else:
-        ax.set_ylim(bottom=15)           # keep top auto
+        if control == "MC":
+            ax.set_ylim(bottom=15)           # keep top auto
+        else:
+            ax.set_ylim(bottom=25)           # keep top auto
     # legend is methods 
     small_legend(ax, loc="best", ncol=1)
 
@@ -2476,6 +2486,8 @@ def build_series_from_chunk_rows(chunk_rows, trigger):
             cut=np.array([rr["cut"] for rr in rows], dtype=np.float64),
             tt=np.array([rr["tt"] for rr in rows], dtype=np.float64),
             aa=np.array([rr["aa"] for rr in rows], dtype=np.float64),
+            tt_overall=np.array([rr["tt_overall"] for rr in rows], dtype=np.float64),
+            aa_overall=np.array([rr["aa_overall"] for rr in rows], dtype=np.float64),
             occ_mid=np.array([rr["occ_mid"] for rr in rows], dtype=np.float64),
             inband=np.array([rr["inband"] for rr in rows], dtype=bool),
         )
@@ -2706,6 +2718,9 @@ def log_chunk_stats(*, chunk, trigger, method, cut, bg_pct, tt, aa, occ_mid, tar
         tt=mask_if_outband(tt, float),
         aa=mask_if_outband(aa, float),
 
+        tt_overall=float(tt),
+        aa_overall=float(aa),
+
         tp=mask_if_outband(tp, int),
         fp=mask_if_outband(fp, int),
         tn=mask_if_outband(tn, int),
@@ -2729,45 +2744,11 @@ def log_chunk_stats(*, chunk, trigger, method, cut, bg_pct, tt, aa, occ_mid, tar
         precision_h4b=mask_if_outband(precision_h4b, float),
         f1_h4b=mask_if_outband(f1_h4b, float),
     ))
-    # chunk_rows.append(dict(
-    #     chunk=int(chunk),
-    #     trigger=str(trigger),     # "AS" or "HT"
-    #     method=str(method),
-    #     cut=float(cut),
-    #     bg_pct=float(bg_pct),
-    #     bg_khz=float(bg_khz),
-    #     abs_err_khz=float(abs_err_khz),
-    #     inband=int(inband),
-    #     tt=float(tt_inband) if tt_inband else None, #make it inband ttbar
-    #     aa=float(aa_inband) if aa_inband else None, #make it inband aa
-    #     occ_mid=float(occ_mid),
-
-    #     tp=(None if tp is None else int(tp)),
-    #     fp=(None if fp is None else int(fp)),
-    #     tn=(None if tn is None else int(tn)),
-    #     fn=(None if fn is None else int(fn)),
-    #     tpr=(None if tpr is None else float(tpr)),
-    #     fpr=(None if fpr is None else float(fpr)),
-    #     precision=(None if precision is None else float(precision)),
-    #     f1=(None if f1 is None else float(f1)),
-    #     tp_tt = (None if tp_tt is None else int(tp_tt)),
-    #     fn_tt = (None if fn_tt is None else int(fn_tt)),
-    #     tp_h4b = (None if tp_h4b is None else int(tp_h4b)),
-    #     fn_h4b = (None if fn_h4b is None else int(fn_h4b)),
-
-    #     tpr_tt=(None if tpr_tt is None else float(tpr_tt)),
-    #     precision_tt=(None if precision_tt is None else float(precision_tt)),
-    #     f1_tt=(None if f1_tt is None else float(f1_tt)),
-
-    #     tpr_h4b=(None if tpr_h4b is None else float(tpr_h4b)),
-    #     precision_h4b=(None if precision_h4b is None else float(precision_h4b)),
-    #     f1_h4b=(None if f1_h4b is None else float(f1_h4b)),
-    # ))
-
+    
 def write_chunk_stats_csv(path: Path):
     if not chunk_rows:
         return
-    cols = ["chunk","trigger","method","cut","bg_pct","bg_khz","abs_err_khz","inband","tt","aa","occ_mid",
+    cols = ["chunk","trigger","method","cut","bg_pct","bg_khz","abs_err_khz","inband","tt","aa","tt_overall","aa_overall","occ_mid",
             "tp","fp","tn","fn","tpr","fpr","precision","f1","tp_tt","fn_tt","tp_h4b","fn_h4b",
             "tpr_tt","precision_tt","f1_tt",
             "tpr_h4b","precision_h4b","f1_h4b"]
@@ -2805,17 +2786,21 @@ def _summarize_window(rows, *, target_pct, tol_pct):
     bg_pct = np.array([r["bg_pct"] for r in rows], dtype=np.float64)
     bg_khz = np.array([r["bg_khz"] for r in rows], dtype=np.float64)
     cut    = np.array([r["cut"]    for r in rows], dtype=np.float64)
-    tt     = np.array([r["tt"]     for r in rows], dtype=np.float64)
-    aa     = np.array([r["aa"]     for r in rows], dtype=np.float64)
+    # tt     = np.array([r["tt"]     for r in rows], dtype=np.float64)
+    # aa     = np.array([r["aa"]     for r in rows], dtype=np.float64)
     occ    = np.array([r["occ_mid"] for r in rows], dtype=np.float64)
+
+    tt_all = np.array([r.get("tt_overall", np.nan) for r in rows], dtype=np.float64)
+    aa_all = np.array([r.get("aa_overall", np.nan) for r in rows], dtype=np.float64)
+
 
     err_pct = bg_pct - float(target_pct)
     abs_err_pct = np.abs(err_pct)
 
     inband_mask = abs_err_pct <= float(tol_pct)
 
-    tt_inband = tt[inband_mask]
-    aa_inband = aa[inband_mask]
+    # tt_inband = tt[inband_mask]
+    # aa_inband = aa[inband_mask]
 
     # in kHz space
     target_khz = float(target_pct) * RATE_SCALE_KHZ
@@ -2835,6 +2820,18 @@ def _summarize_window(rows, *, target_pct, tol_pct):
         vals = [int(v) for v in vals if v is not None]
         return int(np.sum(vals)) if vals else None
 
+    def _sum_int_list(vals):
+        vals = [v for v in vals if v is not None]
+        if not vals:
+            return None
+        out = 0
+        for v in vals:
+            try:
+                out += int(v)
+            except Exception:
+                continue
+        return int(out)
+
     tp_sum = _sum_int("tp")
     fp_sum = _sum_int("fp")
     tn_sum = _sum_int("tn")
@@ -2849,20 +2846,27 @@ def _summarize_window(rows, *, target_pct, tol_pct):
 
     f1_macro = _safe_mean([r.get("f1", np.nan) for r in rows])
 
+    tt_inband = _safe_mean(tt_all[inband_mask]) if np.any(inband_mask) else np.nan
+    aa_inband = _safe_mean(aa_all[inband_mask]) if np.any(inband_mask) else np.nan
+    tt_overall = _safe_mean(tt_all)
+    aa_overall = _safe_mean(aa_all)
+
     return dict(
         n=int(len(rows)),
         bg_khz_mean=_safe_mean(bg_khz),
         mae_khz=_safe_mean(abs_err_khz),
         p95_abs_err_khz=_safe_pctl(abs_err_khz, 95),
         inband=float(np.mean(inband_mask)) if bg_pct.size else np.nan,
-        upfrac=float(np.mean(err_pct >  float(tol_pct))) if bg_pct.size else np.nan,
-        downfrac=float(np.mean(err_pct < -float(tol_pct))) if bg_pct.size else np.nan,
+        # upfrac=float(np.mean(err_pct >  float(tol_pct))) if bg_pct.size else np.nan,
+        # downfrac=float(np.mean(err_pct < -float(tol_pct))) if bg_pct.size else np.nan,
         violmag_khz=_safe_mean(viol_up_khz + viol_dn_khz),
         step_rms=float(step_rms),
         cut_mean=_safe_mean(cut),
         occ_mean=_safe_mean(occ),
-        tt_inband=_safe_mean(tt[inband_mask]) if np.any(inband_mask) else np.nan,
-        aa_inband=_safe_mean(aa[inband_mask]) if np.any(inband_mask) else np.nan,
+        tt_inband=tt_inband,
+        aa_inband=aa_inband,
+        tt_overall =tt_overall,
+        aa_overall =aa_overall,
         TP=tp_sum, FP=fp_sum, TN=tn_sum, FN=fn_sum,
         TPR=float(tpr) if np.isfinite(tpr) else np.nan,
         FPR=float(fpr) if np.isfinite(fpr) else np.nan,
@@ -2886,7 +2890,7 @@ def print_every_k_chunk_stats(chunk_rows, *, trigger, c_hi, k, target_pct, tol_p
     ordered = [m for m in PLOT_METHODS if m in by_method]
 
     print(f"\n[{trigger}] Window chunks {c_lo}..{c_hi} (K={k})")
-    print("  Method    | InBand  MAE(kHz)  P95|e|(kHz)  UpFrac  DownFrac  ViolMag(kHz)  StepRMS  tt(inband)  aa(inband)  bg_mean(kHz)  cut_mean  occ_mean | TPR FPR Precision F1")
+    print("  Method    | InBand  MAE(kHz)  P95|e|(kHz)  ViolMag(kHz)  StepRMS  tt(inband)  aa(inband) tt(overall) aa(overall) bg_mean(kHz)  cut_mean  occ_mean | TPR FPR Precision F1")
     print("  ----------+-------------------------------------------------------------------------------------------------------------------------------------------------")
 
     for m in ordered:
@@ -2898,10 +2902,12 @@ def print_every_k_chunk_stats(chunk_rows, *, trigger, c_hi, k, target_pct, tol_p
             "MAE": s["mae_khz"],
             "P95_abs_err": s["p95_abs_err_khz"],
             "InBand": s["inband"],
-            "UpFrac": s["upfrac"],
-            "DownFrac": s["downfrac"],
-            "tt": s["tt_inband"],
-            "h_to_4b": s["aa_inband"],
+            # "UpFrac": s["upfrac"],
+            # "DownFrac": s["downfrac"],
+            "tt_inband": s["tt_inband"],
+            "h_to_4b_inband": s["aa_inband"],
+            "tt_overall": s["tt_overall"],
+            "h_to_4b_overall": s["aa_overall"],
             "TP": s["TP"], "FP": s["FP"], "TN": s["TN"], "FN": s["FN"], "TPR": s["TPR"], "FPR": s["FPR"], "Precision": s["Precision"], "F1": s["F1"],
         })
         if s is None:
@@ -2918,12 +2924,14 @@ def print_every_k_chunk_stats(chunk_rows, *, trigger, c_hi, k, target_pct, tol_p
             f"{f(s['inband'], w=7, nd=3)}"
             f"{f(s['mae_khz'], w=10, nd=2)}"
             f"{f(s['p95_abs_err_khz'], w=13, nd=2)}"
-            f"{f(s['upfrac'], w=8, nd=3)}"
-            f"{f(s['downfrac'], w=10, nd=3)}"
+            # f"{f(s['upfrac'], w=8, nd=3)}"
+            # f"{f(s['downfrac'], w=10, nd=3)}"
             f"{f(s['violmag_khz'], w=13, nd=2)}"
             f"{f(s['step_rms'], w=9, nd=3)}"
             f"{f(s['tt_inband'], w=11, nd=3)}"
             f"{f(s['aa_inband'], w=11, nd=3)}"
+            f"{f(s['tt_overall'], w=11, nd=3)}"
+            f"{f(s['aa_overall'], w=11, nd=3)}"
             f"{f(s['bg_khz_mean'], w=13, nd=1)}"
             f"{f(s['cut_mean'], w=9, nd=3)}"
             f"{f(s['occ_mean'], w=9, nd=3)}",
@@ -3353,8 +3361,8 @@ def summarize_paper_table(r_pct, s_tt, s_aa, cut_hist, target_pct, tol_pct):
 
 
     # Signal efficiencies conditioned on being in-band
-    out["tt"] = safe_mean(s_tt, inband)
-    out["h_to_4b"] = safe_mean(s_aa, inband)
+    out["tt"] = np.mean(s_tt) #safe_mean(s_tt, inband)
+    out["h_to_4b"] = np.mean(s_aa) #safe_mean(s_aa, inband)
     return out
 
 
@@ -3450,7 +3458,7 @@ def write_paper_table(rows, out_csv: Path, out_tex: Path, target_pct, tol_pct):
     lines.append(r"\toprule")
     lines.append(
         r"Trigger & Method & "
-        r"MAE$\downarrow$ & P95$|e|$\downarrow$ & InBand$\uparrow$ & UpFrac$\downarrow$ & DownFrac$\downarrow$ & "
+        r"MAE$\downarrow$ & P95$|e|$\downarrow$ & InBand$\uparrow$ & $t\bar t\_{\text{overall}},\uparrow$ & $h\to4b\_{\text{overall}},\uparrow$ & "
         r"TPR/Recall$\uparrow$ & FPR$\downarrow$ & TNR$\uparrow$ & FNR$\downarrow$ & Prec.$\uparrow$ & F1$\uparrow$ & "
         r"$t\bar t\,\uparrow$ & $h\to4b\,\uparrow$ \\"
     )
@@ -3475,11 +3483,11 @@ def write_paper_table(rows, out_csv: Path, out_tex: Path, target_pct, tol_pct):
             ("MAE", 3),
             ("P95_abs_err", 3),
             ("InBand", 3),
-            ("UpFrac", 3),
-            ("DownFrac", 3),
+            ("tt_overall", 3),
+            ("h_to_4b_overall", 3),
             ("TPR", 3), ("FPR", 3), ("TNR", 3), ("FNR", 3), ("Precision", 3), ("F1", 3),
-            ("tt", 3),
-            ("h_to_4b", 3),
+            ("tt_inband", 3),
+            ("h_to_4b_inband", 3),
         ]:
             s = fmt_key(key, r.get(key, None), nd=nd)
             s = maybe_bold(tr, m, key, s)
@@ -3623,6 +3631,8 @@ def build_paper_rows_from_chunk_rows(chunk_rows, *, target_pct, tol_pct):
                 target_pct=target_pct,
                 tol_pct=tol_pct,
             )
+            print("DEBUG: s_tt.shape =", np.asarray(s["tt"]).shape)
+            print("DEBUG: s_aa.shape =", np.asarray(s["aa"]).shape)
 
             row = {"Trigger": ("AD" if trig == "AD" else trig), "Method": method, **metrics}
             row.update(summarize_confusion_from_chunk_rows(
@@ -4029,7 +4039,7 @@ def main():
     ap.add_argument("--score-dim-hint", type=int, default=2)
     ap.add_argument("--as-dim", type=int, default=2, choices=[1, 2, 4, 6, 8, 10, 12, 14, 16])
 
-    ap.add_argument("--as-deltas", type=str, default="-3,-1.5,0,1.5,3",choices=["-3,-1.5,0,1.5,3","-4,-2,-1,0,1,2,4","-3,-1.5,-1,0,1,1.5,3"])
+    ap.add_argument("--as-deltas", type=str, default="-3,-1.5,0,1.5,3",choices=["-3,-1.5,0,1.5,3","-4,-2,-1,0,1,2,4", "-5,-3,-1.5,-1,0,1,1.5,3,5","-8,-4,-2,-1,0,1,2,4,8"])
     ap.add_argument("--as-step", type=float, default=0.5, help = "AS delta step size multiply max of as-deltas above would be maximum delta ad trigger can take.")
 
     ap.add_argument("--print-keys", action="store_true")
@@ -4058,6 +4068,10 @@ def main():
                 help="HT extra bonus weight for signal score inside band (helps avoid bg-only overfit)")
     ap.add_argument("--sig-bonus-as", type=float, default=1.0,
                 help="AS extra bonus weight for signal score inside band (helps avoid bg-only overfit)")
+    ap.add_argument("--signal-multiplier-ht", type=float, default=1.0,
+                help="multiplier for signal scores (ttbar + h4b) in GRPO reward calculation")
+    ap.add_argument("--signal-multiplier-as", type=float, default=1.0,
+                help="multiplier for signal scores (ttbar + h4b) in GRPO reward calculation")
 
 
     # objective/reward
@@ -4098,13 +4112,17 @@ def main():
                         "feasible_first_sig   : feasible-first (|bg-target|<=feas_mult*tol), " \
                         "then rank by mix*tt+(1-mix)*aa; pad with closest if needed" \
                             "both=runs both.")
-    ap.add_argument("--group-size-keep", type=int, default=16, choices=[16, 32, 64, 128]) 
-    ap.add_argument("--group-size-sample", type=int, default=32, choices=[16, 32, 64, 128, 256])
+    ap.add_argument("--group-size-keep", type=int, default=16, choices=[16, 32, 64, 128, 256]) 
+    ap.add_argument("--group-size-sample", type=int, default=32, choices=[16, 32, 64, 128, 256, 512])
 
     ap.add_argument("--gfpo-feas-mult", type=float, default=1.0,
                     help="feasibility band multiplier: |bg-target| <= mult*tol")
-    ap.add_argument("--gfpo-mix", type=float, default=0.20, #0.8 originally
-                    help="GFPO ranking: mix*tt + (1-mix)*aa within feasible set")
+    ap.add_argument("--gfpo-mix-ht", type=float, default=0.20, #0.8 originally
+                    help="GFPO ranking: mix*tt + (1-mix)*aa within feasible set for Ht trigger")
+    ap.add_argument("--gfpo-mix-as", type=float, default=0.20, #0.8 originally
+                    help="GFPO ranking: mix*tt + (1-mix)*aa within feasible set for AD trigger")
+    
+    
 
 
 
@@ -4322,7 +4340,6 @@ def main():
         tol=tol,
         mode="lex",        # "lex" default; "lag" if adaptive lambda
         mix=args.alpha, #increase for tt
-        alpha_sig=1.0,
         beta_move=args.beta,
         gamma_stab=0.25,
         k_violate=args.violation_penalty,
@@ -4343,7 +4360,6 @@ def main():
         tol=tol,
         mode="lex",        # "lex" default; "lag" if adaptive lambda
         mix=args.alpha, #increase for tt
-        alpha_sig=1.0,
         beta_move=args.beta,
         gamma_stab=0.25,
         k_violate=args.violation_penalty,
@@ -4443,7 +4459,7 @@ def main():
         as_mid=as_mid, as_span=as_span, near_widths=near_widths_as, K=K,
         target=target, tol=tol,
         train_every=args.train_every, temperature=args.as_temperature,
-        group_size_keep=args.group_size_keep
+        group_size_keep=args.group_size_keep, signal_multiplier=args.signal_multiplier_as
         ))
 
 
@@ -4458,8 +4474,8 @@ def main():
         train_every=args.train_every, temperature=args.as_temperature,
         gfpo_filter="abs_err_topk",
         group_size_sample=args.group_size_sample, group_size_keep=args.group_size_keep,
-        feas_mult=args.gfpo_feas_mult, mix=args.gfpo_mix,
-        band_mult=args.band_mult_as, sig_bonus=args.sig_bonus_as,
+        feas_mult=args.gfpo_feas_mult, mix=args.gfpo_mix_as,
+        band_mult=args.band_mult_as, sig_bonus=args.sig_bonus_as, signal_multiplier=args.signal_multiplier_as
         ))
 
     if "gfpo_fr" in BASELINES:
@@ -4473,8 +4489,8 @@ def main():
         train_every=args.train_every, temperature=args.as_temperature,
         gfpo_filter="feasible_first_sig",
         group_size_sample=args.group_size_sample, group_size_keep=args.group_size_keep,
-        feas_mult=args.gfpo_feas_mult, mix=args.gfpo_mix,
-        band_mult=args.band_mult_as, sig_bonus=args.sig_bonus_as
+        feas_mult=args.gfpo_feas_mult, mix=args.gfpo_mix_as,
+        band_mult=args.band_mult_as, sig_bonus=args.sig_bonus_as, signal_multiplier=args.signal_multiplier_as
         ))
 
     if "ppo" in BASELINES:
@@ -4632,7 +4648,6 @@ def main():
                 tol=tol,
                 mode="lex",        # "lex" recommended
                 mix=args.alpha, #increase for tt
-                alpha_sig=1.0,
                 beta_move=args.beta,
                 gamma_stab=0.25,
                 k_violate=args.violation_penalty,
@@ -4645,7 +4660,7 @@ def main():
             ht_mid=ht_mid, ht_span=ht_span, near_widths=near_widths_ht, K=K,
             target=target, tol=tol,
             train_every=args.train_every, temperature=args.ht_temperature,
-            group_size_keep=args.group_size_keep
+            group_size_keep=args.group_size_keep, signal_multiplier=args.signal_multiplier_ht
             ))
 
 
@@ -4660,8 +4675,8 @@ def main():
                 train_every=args.train_every, temperature=args.ht_temperature,
                 gfpo_filter="abs_err_topk",
                 group_size_sample=args.group_size_sample, group_size_keep=args.group_size_keep,
-                feas_mult=args.gfpo_feas_mult, mix=args.gfpo_mix,
-                band_mult=args.band_mult_ht, sig_bonus=args.sig_bonus
+                feas_mult=args.gfpo_feas_mult, mix=args.gfpo_mix_ht,
+                band_mult=args.band_mult_ht, sig_bonus=args.sig_bonus, signal_multiplier=args.signal_multiplier_ht
                 ))
 
         if "gfpo_fr" in BASELINES:
@@ -4675,8 +4690,8 @@ def main():
                 train_every=args.train_every, temperature=args.ht_temperature,
                 gfpo_filter="feasible_first_sig",
                 group_size_sample=args.group_size_sample, group_size_keep=args.group_size_keep,
-                feas_mult=args.gfpo_feas_mult, mix=args.gfpo_mix,
-                band_mult=args.band_mult_ht, sig_bonus=args.sig_bonus
+                feas_mult=args.gfpo_feas_mult, mix=args.gfpo_mix_ht,
+                band_mult=args.band_mult_ht, sig_bonus=args.sig_bonus, signal_multiplier=args.signal_multiplier_ht
             ))
     
         
@@ -4731,7 +4746,6 @@ def main():
                 tol=tol,
                 mode="lex",        # "lex" recommended
                 mix=args.alpha, #increase for tt
-                alpha_sig=1.0,
                 beta_move=args.beta,
                 gamma_stab=0.25,
                 k_violate=args.violation_penalty,
@@ -5091,7 +5105,7 @@ def main():
         grpo_samples,
         trigger="AD",
         target=target, tol=tol,
-        mix=float(args.gfpo_mix),
+        mix=float(args.gfpo_mix_as),
         group_size_keep=int(args.group_size_keep),
         plots_dir=plots_dir,
         run_label=run_label,
@@ -5169,12 +5183,15 @@ def main():
             print(f"{m:<9}  {ad:8.4f}  {ht:8.4f}")
 
         # ttbar plot (grouped by trigger)
+
+        # ttbar plot (grouped by trigger)
         plot_inband_eff_grouped_by_trigger(
             eff_ad, eff_ht,
             signal_key="tt",
             signal_label=r"$t\bar{t}$",
             outpath=plots_dir / "inband_eff_ttbar_ad_vs_ht",
             run_label=run_label,
+            control = args.control
         )
 
         # h->4b plot (grouped by trigger)
@@ -5184,13 +5201,14 @@ def main():
             signal_label=r"$h\rightarrow 4b$",
             outpath=plots_dir / "inband_eff_h4b_ad_vs_ht",
             run_label=run_label,
+            control = args.control
         )
 
         make_gfpo_f_vs_fr_diagnostics(
             grpo_samples,
             trigger="HT",
             target=target, tol=tol,
-            mix=float(args.gfpo_mix),
+            mix=float(args.gfpo_mix_ht),
             group_size_keep=int(args.group_size_keep),
             plots_dir=plots_dir,
             run_label=run_label,
