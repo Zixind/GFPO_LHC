@@ -8,6 +8,72 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 
+import json
+from pathlib import Path
+import torch
+
+
+
+def report_method_name(method: str, *, dqn_gamma: float = 0.0) -> str:
+    m = str(method)
+    if m == "DQN":
+        return f"dqn_gamma_{gamma_tag(float(dqn_gamma))}"  # e.g. 0p00 / 0p95
+    return m
+def _get_optimizer_lr(opt: Optional[optim.Optimizer]) -> Optional[float]:
+    try:
+        if opt is None:
+            return None
+        return float(opt.param_groups[0].get("lr", None))
+    except Exception:
+        return None
+
+
+def save_dqn_variants(agent, save_dir: str, gammas=(0.0, 0.95), extra_meta: dict | None = None):
+    """
+    Save the *same trained DQN weights* under multiple gamma tags for bookkeeping / rollout.
+    (Gamma is stored in ckpt/meta; weights are identical unless you trained separate agents.)
+    """
+    paths = []
+    lr = _get_optimizer_lr(getattr(agent, "optimizer", None))
+
+    for g in gammas:
+        meta = dict(extra_meta or {})
+        meta.update({
+            "gamma": float(g),
+            "lr": lr,
+        })
+        ckpt_path, meta_path = save_dqn(agent, save_dir=save_dir, gamma=float(g), extra_meta=meta)
+        paths.append((float(g), ckpt_path, meta_path))
+    return paths
+
+
+def gamma_tag(gamma: float) -> str:
+    # 0.95 -> "0p95", 0.0 -> "0p00"
+    return f"{gamma:.2f}".replace(".", "p")
+
+def save_dqn(agent, save_dir: str, gamma: float, extra_meta: dict | None = None):
+    save_dir = Path(save_dir)
+    save_dir.mkdir(parents=True, exist_ok=True)
+
+    tag = gamma_tag(gamma)
+    ckpt_path = save_dir / f"dqn_gamma_{tag}.pt"
+    meta_path = save_dir / f"dqn_gamma_{tag}.meta.json"
+
+    ckpt = {
+        "policy_state_dict": agent.policy_net.state_dict(),
+        "target_state_dict": agent.target_net.state_dict(),
+        "optimizer_state_dict": agent.optimizer.state_dict(),
+        "steps": getattr(agent, "steps", None),
+        "gamma": gamma,
+    }
+    torch.save(ckpt, ckpt_path)
+
+    meta = {"gamma": gamma}
+    if extra_meta:
+        meta.update(extra_meta)
+    meta_path.write_text(json.dumps(meta, indent=2))
+
+    return str(ckpt_path), str(meta_path)
 
 def _iter_children(obj: Any) -> Iterable[Tuple[Any, Any]]:
     """Yield (key, child) for recursion over dict/list/tuple/obj.__dict__."""
@@ -108,6 +174,12 @@ def save_registry_mc(registry: dict, out_dir: Path, *, meta_common: Optional[dic
                 continue
             out_pt = out_dir / str(trigger) / f"{method}.pt"
             meta = dict(meta_common, trigger=str(trigger), method=str(method))
+
+                
+            
+            # --- Everyone else stays identical ---
+            out_pt = out_dir / str(trigger) / f"{method}.pt"
+
             save_agent_mc(agent, out_pt, meta=meta)
 # --------------------------- end minimal model saving (MC) ---------------------------
 
@@ -304,7 +376,7 @@ def plot_early_abs_err_hist(grpo_ae, gfpo_ae, *, title, outpath, run_label):
     plt.close(fig)
 
 # PLOT_METHODS = ["Constant", "PID", "ADT", "DQN", "GRPO", "GFPO-F", "GFPO-FR"]
-PLOT_METHODS = ["Constant", "PID", "ADT", "DQN", "PPO", "GRPO", "GFPO-F", "GFPO-FR"]
+PLOT_METHODS = ["Constant", "PID", "ADT", "DQN", "DQN_GAMMA_0", "PPO", "GRPO", "GFPO-F", "GFPO-FR"]
 
 def select_plot_methods(d):
     """
@@ -2541,35 +2613,94 @@ def log_grpo_row(rows, *, method="GRPO",
     })
 
 
-def log_chunk_stats(*, chunk, trigger, method, cut, bg_pct, tt, aa, occ_mid, target, tol):
+
+def log_chunk_stats(*, chunk, trigger, method, cut, bg_pct, tt, aa, occ_mid, target, tol,
+                    tp=None, fp=None, tn=None, fn=None,
+                    tpr=None, fpr=None, precision=None, f1=None,
+                    tp_tt = None, fn_tt = None,
+                    tp_h4b = None, fn_h4b = None,
+                    tpr_tt=None, precision_tt=None, f1_tt=None,
+                    tpr_h4b=None, precision_h4b=None, f1_h4b=None):
+    # we only care about in band rates for signal efficiency
     bg_khz = float(bg_pct) * RATE_SCALE_KHZ
     target_khz = float(target) * RATE_SCALE_KHZ
     tol_khz = float(tol) * RATE_SCALE_KHZ
     abs_err_khz = abs(bg_khz - target_khz)
     inband = int(abs(float(bg_pct) - float(target)) <= float(tol))
+    
+    # mask signal efficiencies by inband
+    # tt_inband = (None if tt is None else (float(tt) if inband else None))
+    # aa_inband = (None if aa is None else (float(aa) if inband else None))
+
+    def mask_if_outband(x, cast=float):
+        """Return cast(x) if inband else None. Preserves 0.0 correctly."""
+        if x is None:
+            return None
+        return cast(x) if inband else None
 
     chunk_rows.append(dict(
+        # always log control / rate stats
         chunk=int(chunk),
-        trigger=str(trigger),     # "AS" or "HT"
+        trigger=str(trigger),
         method=str(method),
         cut=float(cut),
         bg_pct=float(bg_pct),
         bg_khz=float(bg_khz),
         abs_err_khz=float(abs_err_khz),
         inband=int(inband),
-        tt=float(tt),
-        aa=float(aa),
         occ_mid=float(occ_mid),
-    ))
 
+        # ONLY log signal stats if inband
+        tt=mask_if_outband(tt, float),
+        aa=mask_if_outband(aa, float),
+
+        tt_overall=float(tt),
+        aa_overall=float(aa),
+
+        tp=mask_if_outband(tp, int),
+        fp=mask_if_outband(fp, int),
+        tn=mask_if_outband(tn, int),
+        fn=mask_if_outband(fn, int),
+
+        tpr=mask_if_outband(tpr, float),
+        fpr=mask_if_outband(fpr, float),
+        precision=mask_if_outband(precision, float),
+        f1=mask_if_outband(f1, float),
+
+        tp_tt=mask_if_outband(tp_tt, int),
+        fn_tt=mask_if_outband(fn_tt, int),
+        tp_h4b=mask_if_outband(tp_h4b, int),
+        fn_h4b=mask_if_outband(fn_h4b, int),
+
+        tpr_tt=mask_if_outband(tpr_tt, float),
+        precision_tt=mask_if_outband(precision_tt, float),
+        f1_tt=mask_if_outband(f1_tt, float),
+
+        tpr_h4b=mask_if_outband(tpr_h4b, float),
+        precision_h4b=mask_if_outband(precision_h4b, float),
+        f1_h4b=mask_if_outband(f1_h4b, float),
+    ))
+    
+# def write_chunk_stats_csv(path: Path):
+#     if not chunk_rows:
+#         return
+#     cols = ["chunk","trigger","method","cut","bg_pct","bg_khz","abs_err_khz","inband","tt","aa","occ_mid"]
+#     with open(path, "w", newline="") as f:
+#         w = csv.DictWriter(f, fieldnames=cols)
+#         w.writeheader()
+#         w.writerows(chunk_rows)
 def write_chunk_stats_csv(path: Path):
     if not chunk_rows:
         return
-    cols = ["chunk","trigger","method","cut","bg_pct","bg_khz","abs_err_khz","inband","tt","aa","occ_mid"]
+    cols = ["chunk","trigger","method","cut","bg_pct","bg_khz","abs_err_khz","inband","tt","aa","tt_overall","aa_overall","occ_mid",
+            "tp","fp","tn","fn","tpr","fpr","precision","f1","tp_tt","fn_tt","tp_h4b","fn_h4b",
+            "tpr_tt","precision_tt","f1_tt",
+            "tpr_h4b","precision_h4b","f1_h4b"]
     with open(path, "w", newline="") as f:
         w = csv.DictWriter(f, fieldnames=cols)
         w.writeheader()
         w.writerows(chunk_rows)
+
 def _safe_mean(x):
     x = np.asarray(x, dtype=np.float64)
     x = x[np.isfinite(x)]
@@ -2587,6 +2718,54 @@ def _window_rows(chunk_rows, *, trigger, c_lo, c_hi):
         and (c_lo <= int(r.get("chunk", -1)) <= c_hi)
     ]
 
+# def _summarize_window(rows, *, target_pct, tol_pct):
+#     """
+#     rows: list of chunk_rows dicts for a single (trigger, method) within a chunk window
+#     Returns dict of window-level aggregated stats.
+#     """
+#     if not rows:
+#         return None
+
+#     bg_pct = np.array([r["bg_pct"] for r in rows], dtype=np.float64)
+#     bg_khz = np.array([r["bg_khz"] for r in rows], dtype=np.float64)
+#     cut    = np.array([r["cut"]    for r in rows], dtype=np.float64)
+#     tt     = np.array([r["tt"]     for r in rows], dtype=np.float64)
+#     aa     = np.array([r["aa"]     for r in rows], dtype=np.float64)
+#     occ    = np.array([r["occ_mid"] for r in rows], dtype=np.float64)
+
+#     err_pct = bg_pct - float(target_pct)
+#     abs_err_pct = np.abs(err_pct)
+
+#     inband_mask = abs_err_pct <= float(tol_pct)
+
+#     # in kHz space
+#     target_khz = float(target_pct) * RATE_SCALE_KHZ
+#     abs_err_khz = np.abs(bg_khz - target_khz)
+
+#     # violation magnitudes in kHz (how far beyond band, not just whether)
+#     tol_khz = float(tol_pct) * RATE_SCALE_KHZ
+#     viol_up_khz = np.maximum(0.0, (bg_khz - (target_khz + tol_khz)))
+#     viol_dn_khz = np.maximum(0.0, ((target_khz - tol_khz) - bg_khz))
+
+#     dc = np.diff(cut) if cut.size >= 2 else np.array([], dtype=np.float64)
+#     step_rms = float(np.sqrt(np.mean(dc * dc))) if dc.size else 0.0
+
+#     return dict(
+#         n=int(len(rows)),
+#         bg_khz_mean=_safe_mean(bg_khz),
+#         mae_khz=_safe_mean(abs_err_khz),
+#         p95_abs_err_khz=_safe_pctl(abs_err_khz, 95),
+#         inband=float(np.mean(inband_mask)) if bg_pct.size else np.nan,
+#         upfrac=float(np.mean(err_pct >  float(tol_pct))) if bg_pct.size else np.nan,
+#         downfrac=float(np.mean(err_pct < -float(tol_pct))) if bg_pct.size else np.nan,
+#         violmag_khz=_safe_mean(viol_up_khz + viol_dn_khz),
+#         step_rms=float(step_rms),
+#         cut_mean=_safe_mean(cut),
+#         occ_mean=_safe_mean(occ),
+#         tt_inband=_safe_mean(tt[inband_mask]) if np.any(inband_mask) else np.nan,
+#         aa_inband=_safe_mean(aa[inband_mask]) if np.any(inband_mask) else np.nan,
+#     )
+
 def _summarize_window(rows, *, target_pct, tol_pct):
     """
     rows: list of chunk_rows dicts for a single (trigger, method) within a chunk window
@@ -2598,14 +2777,21 @@ def _summarize_window(rows, *, target_pct, tol_pct):
     bg_pct = np.array([r["bg_pct"] for r in rows], dtype=np.float64)
     bg_khz = np.array([r["bg_khz"] for r in rows], dtype=np.float64)
     cut    = np.array([r["cut"]    for r in rows], dtype=np.float64)
-    tt     = np.array([r["tt"]     for r in rows], dtype=np.float64)
-    aa     = np.array([r["aa"]     for r in rows], dtype=np.float64)
+    # tt     = np.array([r["tt"]     for r in rows], dtype=np.float64)
+    # aa     = np.array([r["aa"]     for r in rows], dtype=np.float64)
     occ    = np.array([r["occ_mid"] for r in rows], dtype=np.float64)
+
+    tt_all = np.array([r.get("tt_overall", np.nan) for r in rows], dtype=np.float64)
+    aa_all = np.array([r.get("aa_overall", np.nan) for r in rows], dtype=np.float64)
+
 
     err_pct = bg_pct - float(target_pct)
     abs_err_pct = np.abs(err_pct)
 
     inband_mask = abs_err_pct <= float(tol_pct)
+
+    # tt_inband = tt[inband_mask]
+    # aa_inband = aa[inband_mask]
 
     # in kHz space
     target_khz = float(target_pct) * RATE_SCALE_KHZ
@@ -2619,66 +2805,191 @@ def _summarize_window(rows, *, target_pct, tol_pct):
     dc = np.diff(cut) if cut.size >= 2 else np.array([], dtype=np.float64)
     step_rms = float(np.sqrt(np.mean(dc * dc))) if dc.size else 0.0
 
+
+    def _sum_int(key):
+        vals = [r.get(key, None) for r in rows]
+        vals = [int(v) for v in vals if v is not None]
+        return int(np.sum(vals)) if vals else None
+
+    def _sum_int_list(vals):
+        vals = [v for v in vals if v is not None]
+        if not vals:
+            return None
+        out = 0
+        for v in vals:
+            try:
+                out += int(v)
+            except Exception:
+                continue
+        return int(out)
+
+    tp_sum = _sum_int("tp")
+    fp_sum = _sum_int("fp")
+    tn_sum = _sum_int("tn")
+    fn_sum = _sum_int("fn")
+
+    nb = (fp_sum or 0) + (tn_sum or 0)
+    ns = (tp_sum or 0) + (fn_sum or 0)
+    tpr = (tp_sum / ns) if (tp_sum is not None and ns > 0) else np.nan
+    fpr = (fp_sum / nb) if (fp_sum is not None and nb > 0) else np.nan
+    
+    prec = (tp_sum / (tp_sum + fp_sum)) if (tp_sum is not None and fp_sum is not None and (tp_sum + fp_sum) > 0) else np.nan
+
+    f1_macro = _safe_mean([r.get("f1", np.nan) for r in rows])
+
+    tt_inband = _safe_mean(tt_all[inband_mask]) if np.any(inband_mask) else np.nan
+    aa_inband = _safe_mean(aa_all[inband_mask]) if np.any(inband_mask) else np.nan
+    tt_overall = _safe_mean(tt_all)
+    aa_overall = _safe_mean(aa_all)
+
     return dict(
         n=int(len(rows)),
         bg_khz_mean=_safe_mean(bg_khz),
         mae_khz=_safe_mean(abs_err_khz),
         p95_abs_err_khz=_safe_pctl(abs_err_khz, 95),
         inband=float(np.mean(inband_mask)) if bg_pct.size else np.nan,
-        upfrac=float(np.mean(err_pct >  float(tol_pct))) if bg_pct.size else np.nan,
-        downfrac=float(np.mean(err_pct < -float(tol_pct))) if bg_pct.size else np.nan,
+        # upfrac=float(np.mean(err_pct >  float(tol_pct))) if bg_pct.size else np.nan,
+        # downfrac=float(np.mean(err_pct < -float(tol_pct))) if bg_pct.size else np.nan,
         violmag_khz=_safe_mean(viol_up_khz + viol_dn_khz),
         step_rms=float(step_rms),
         cut_mean=_safe_mean(cut),
         occ_mean=_safe_mean(occ),
-        tt_inband=_safe_mean(tt[inband_mask]) if np.any(inband_mask) else np.nan,
-        aa_inband=_safe_mean(aa[inband_mask]) if np.any(inband_mask) else np.nan,
+        tt_inband=tt_inband,
+        aa_inband=aa_inband,
+        tt_overall =tt_overall,
+        aa_overall =aa_overall,
+        TP=tp_sum, FP=fp_sum, TN=tn_sum, FN=fn_sum,
+        TPR=float(tpr) if np.isfinite(tpr) else np.nan,
+        FPR=float(fpr) if np.isfinite(fpr) else np.nan,
+        Precision=float(prec) if np.isfinite(prec) else np.nan,
+        F1=float(f1_macro) if np.isfinite(f1_macro) else np.nan,  
     )
 
-def print_every_k_chunk_stats(chunk_rows, *, trigger, c_hi, k, target_pct, tol_pct):
+
+def print_every_k_chunk_stats(chunk_rows, *, trigger, c_hi, k, target_pct, tol_pct, rows_out=None, dqn_gamma = 0.0):
     c_lo = max(0, int(c_hi) - int(k) + 1)
-    rows = _window_rows(chunk_rows, trigger=trigger, c_lo=c_lo, c_hi=c_hi)
-    if not rows:
+    window_rows = _window_rows(chunk_rows, trigger=trigger, c_lo=c_lo, c_hi=c_hi)
+    if not window_rows:
         return
 
-    # group by method
     by_method = {}
-    for r in rows:
-        m = r.get("method", "UNK")
-        by_method.setdefault(m, []).append(r)
+    for r in window_rows:
+        by_method.setdefault(r.get("method", "UNK"), []).append(r)
 
-    # enforce paper plot order
     ordered = [m for m in PLOT_METHODS if m in by_method]
-
+    print('ordered ', ordered)
+            # printing line (optional: print both too)
+    def f(x, w=8, nd=3):
+        if x is None or (isinstance(x, float) and not np.isfinite(x)):
+            return " " * (w - 3) + "nan"
+        return f"{x:{w}.{nd}f}"
+   
     print(f"\n[{trigger}] Window chunks {c_lo}..{c_hi} (K={k})")
-    print("  Method    | InBand  MAE(kHz)  P95|e|(kHz)  UpFrac  DownFrac  ViolMag(kHz)  StepRMS  tt(inband)  aa(inband)  bg_mean(kHz)  cut_mean  occ_mean")
-    print("  ----------+-------------------------------------------------------------------------------------------------------------------------------")
+    print("  Method    | InBand  MAE(kHz)  P95|e|(kHz)  ViolMag(kHz)  StepRMS  tt(inband)  aa(inband) tt(overall) aa(overall) bg_mean(kHz)  cut_mean  occ_mean | TPR FPR Precision F1")
+    print("  ----------+-------------------------------------------------------------------------------------------------------------------------------------------------")
+
+    # collect summary rows somewhere separate (optional)
+    if rows_out is None:
+        rows_out = []
 
     for m in ordered:
         s = _summarize_window(by_method[m], target_pct=target_pct, tol_pct=tol_pct)
         if s is None:
             continue
 
-        def f(x, w=8, nd=3):
-            if x is None or (isinstance(x, float) and not np.isfinite(x)):
-                return " " * (w - 3) + "nan"
-            return f"{x:{w}.{nd}f}"
+        report_names = [m]
+        # if m == "DQN":
+        #     report_names = ["DQN", report_method_name("DQN", dqn_gamma=float(dqn_gamma))]
 
-        print(
-            f"  {m:<9} |"
-            f"{f(s['inband'], w=7, nd=3)}"
-            f"{f(s['mae_khz'], w=10, nd=2)}"
-            f"{f(s['p95_abs_err_khz'], w=13, nd=2)}"
-            f"{f(s['upfrac'], w=8, nd=3)}"
-            f"{f(s['downfrac'], w=10, nd=3)}"
-            f"{f(s['violmag_khz'], w=13, nd=2)}"
-            f"{f(s['step_rms'], w=9, nd=3)}"
-            f"{f(s['tt_inband'], w=11, nd=3)}"
-            f"{f(s['aa_inband'], w=11, nd=3)}"
-            f"{f(s['bg_khz_mean'], w=13, nd=1)}"
-            f"{f(s['cut_mean'], w=9, nd=3)}"
-            f"{f(s['occ_mean'], w=9, nd=3)}"
-        )
+
+        for m_out in report_names:
+            # write a clean summary row (DON'T append to window_rows)
+            rows_out.append({
+                "Trigger": trigger,
+                "Method": m_out,
+                "MAE": s["mae_khz"],
+                "P95_abs_err": s["p95_abs_err_khz"],
+                "InBand": s["inband"],
+                "tt_inband": s["tt_inband"],
+                "h_to_4b_inband": s["aa_inband"],
+                "tt_overall": s["tt_overall"],
+                "h_to_4b_overall": s["aa_overall"],
+                "TP": s["TP"], "FP": s["FP"], "TN": s["TN"], "FN": s["FN"],
+                "TPR": s["TPR"], "FPR": s["FPR"], "Precision": s["Precision"], "F1": s["F1"],
+            })
+
+            # PRINT *inside* the loop so both names show up
+            print(
+                f"  {m_out:<15} |"
+                f" {s['n']:<4d}"
+                f"{f(s['inband'], w=7, nd=3)}"
+                f"{f(s['mae_khz'], w=10, nd=2)}"
+                f"{f(s['p95_abs_err_khz'], w=13, nd=2)}"
+                f"{f(s['violmag_khz'], w=13, nd=2)}"
+                f"{f(s['step_rms'], w=9, nd=3)}"
+                f"{f(s['tt_inband'], w=11, nd=3)}"
+                f"{f(s['aa_inband'], w=11, nd=3)}"
+                f"{f(s['tt_overall'], w=9, nd=3)}"
+                f"{f(s['aa_overall'], w=9, nd=3)}"
+                f"{f(s['bg_khz_mean'], w=13, nd=1)}"
+                f"{f(s['cut_mean'], w=9, nd=3)}"
+                f"{f(s['occ_mean'], w=9, nd=3)}"
+                f" |{f(s['TPR'], w=7, nd=3)}"
+                f"{f(s['FPR'], w=9, nd=3)}"
+                f"{f(s['Precision'], w=11, nd=3)}"
+                f"{f(s['F1'], w=8, nd=3)}"
+            )
+
+    return rows_out
+        # m_out = report_method_name(m, dqn_gamma=0.0)  # <-- set gamma for reporting here
+
+        
+        # rows.append({
+        #     "Trigger": trigger,
+        #     "Method":  m,
+        #     "MAE": s["mae_khz"],
+        #     "P95_abs_err": s["p95_abs_err_khz"],
+        #     "InBand": s["inband"],
+        #     # "UpFrac": s["upfrac"],
+        #     # "DownFrac": s["downfrac"],
+        #     "tt_inband": s["tt_inband"],
+        #     "h_to_4b_inband": s["aa_inband"],
+        #     "tt_overall": s["tt_overall"],
+        #     "h_to_4b_overall": s["aa_overall"],
+        #     "TP": s["TP"], "FP": s["FP"], "TN": s["TN"], "FN": s["FN"], "TPR": s["TPR"], "FPR": s["FPR"], "Precision": s["Precision"], "F1": s["F1"],
+        # })
+        # if s is None:
+        #     continue
+
+        # def f(x, w=8, nd=3):
+        #     if x is None or (isinstance(x, float) and not np.isfinite(x)):
+        #         return " " * (w - 3) + "nan"
+        #     return f"{x:{w}.{nd}f}"
+
+        # print(
+        #     f"  {m_out:<12} |"
+        #     f" (n={s['n']}) |"
+        #     f"{f(s['inband'], w=7, nd=3)}"
+        #     f"{f(s['mae_khz'], w=10, nd=2)}"
+        #     f"{f(s['p95_abs_err_khz'], w=13, nd=2)}"
+        #     # f"{f(s['upfrac'], w=8, nd=3)}"
+        #     # f"{f(s['downfrac'], w=10, nd=3)}"
+        #     f"{f(s['violmag_khz'], w=13, nd=2)}"
+        #     f"{f(s['step_rms'], w=9, nd=3)}"
+        #     f"{f(s['tt_inband'], w=11, nd=3)}"
+        #     f"{f(s['aa_inband'], w=11, nd=3)}"
+        #     f"{f(s['tt_overall'], w=11, nd=3)}"
+        #     f"{f(s['aa_overall'], w=11, nd=3)}"
+        #     f"{f(s['bg_khz_mean'], w=13, nd=1)}"
+        #     f"{f(s['cut_mean'], w=9, nd=3)}"
+        #     f"{f(s['occ_mean'], w=9, nd=3)}",
+        #     f"{f(s['TPR'], w=9, nd=3)}",
+        #     f"{f(s['FPR'], w=9, nd=3)}",
+        #     f"{f(s['Precision'], w=11, nd=3)}",
+        #     f"{f(s['F1'], w=8, nd=3)}",     
+        # )
+
+
 
 def ecdf(x):
     """Creating error cdf"""
@@ -2950,7 +3261,7 @@ def write_paper_table(rows, out_csv: Path, out_tex: Path, target_pct, tol_pct):
     # ---- Force trigger/method order in outputs ----
     trigger_order = ["HT", "AD"]   
     # method_order  = ["Constant", "PID", "ADT", "DQN", "GRPO", "GFPO-F", "GFPO-FR"]
-    method_order  = ["Constant", "PID", "ADT", "DQN", "PPO", "GRPO", "GFPO-F", "GFPO-FR"]
+    method_order  = ["Constant", "PID", "ADT", "DQN", "dqn_gamma_0p00", "PPO", "GRPO", "GFPO-F", "GFPO-FR"]
 
     trig_rank = {t: i for i, t in enumerate(trigger_order)}
     meth_rank = {m: i for i, m in enumerate(method_order)}
@@ -3487,6 +3798,9 @@ def main():
                     help="tolerance in percent units; 0.025 corresponds to [90,110] kHz when target=0.25%")
     ap.add_argument("--alpha", type=float, default=0.4)
     ap.add_argument("--beta", type=float, default=0.2)
+    ap.add_argument("--violation-penalty", type=float, default=1.0,
+                    help="penalty weight for bg rate outside of target±tol band")
+
 
     # optional stabilization (AD-specific)
     ap.add_argument("--occ-pen", type=float, default=0.0,
@@ -3525,8 +3839,8 @@ def main():
     ap.add_argument(
         "--baselines",
         type=str,
-        default="constant,pid,adt,dqn,ppo,grpo,gfpo_f,gfpo_fr",
-        help="Comma-separated: constant,pid,adt,dqn,ppo,grpo,gfpo_f,gfpo_fr"
+        default="constant,pid,adt,dqn,ppo,grpo,gfpo_f,gfpo_fr,dqn_gamma_0",
+        help="Comma-separated: constant,pid,adt,dqn,ppo,grpo,gfpo_f,gfpo_fr,dqn_gamma_0"
     )
 
 
@@ -3735,11 +4049,10 @@ def main():
         target=target,
         tol=tol,
         mode="lex",        # "lex" default; "lag" if adaptive lambda
-        mix=0.75, #increase for tt
-        alpha_sig=1.0,
-        beta_move=0.02,
+        mix=args.alpha, #increase for tt
+        beta_move=args.beta,
         gamma_stab=0.25,
-        k_violate=5.0,
+        k_violate=args.violation_penalty,
         w_occ=float(args.occ_pen)
     ))
     gfpo_cfg_as = GRPOConfig(
@@ -3756,11 +4069,10 @@ def main():
         target=target,
         tol=tol,
         mode="lex",        # "lex" default; "lag" if adaptive lambda
-        mix=0.75, #increase for tt
-        alpha_sig=1.0,
-        beta_move=0.02,
+        mix=args.alpha, #increase for tt
+        beta_move=args.beta,
         gamma_stab=0.25,
-        k_violate=5.0,
+        k_violate=args.violation_penalty,
         w_occ=float(args.occ_pen)
     ))
 
@@ -3786,6 +4098,16 @@ def main():
     dqn_as = SeqDQNAgent(seq_len=K, feat_dim=feat_dim_as, n_actions=len(AS_DELTAS),
                         cfg=dqn_cfg, seed=SEED)
     
+    #adding gamma = 0 for regression testing TBC
+    dqn_cfg_gamma_0 = DQNConfig(
+        lr=float(args.dqn_lr),
+        gamma=0,
+        batch_size=int(args.dqn_batch_size),
+        target_update=int(args.dqn_target_update),
+    )
+    dqn_as_gamma_0 = SeqDQNAgent(seq_len=K, feat_dim=feat_dim_as, n_actions=len(AS_DELTAS),
+                        cfg=dqn_cfg_gamma_0, seed=SEED)
+    
 
     controllers_as = []
 
@@ -3804,8 +4126,20 @@ def main():
         eps_min=args.dqn_eps_min, eps_decay=args.dqn_eps_decay,
         train_steps_per_micro=args.dqn_train_steps_per_micro,
         alpha=args.alpha, beta=args.beta
-            ))
+        ))
     
+    if "dqn_gamma_0" in BASELINES:
+        controllers_as.append(DQNCtrl(
+            "DQN_GAMMA_0", fixed_AS_cut, as_lo, as_hi,
+            agent=dqn_as_gamma_0, deltas=AS_DELTAS, step=AS_STEP, max_delta=MAX_DELTA_AS,
+            as_mid=as_mid, as_span=as_span, near_widths=near_widths_as, K=K,
+            target=target, tol=tol,
+            eps_min=args.dqn_eps_min, eps_decay=args.dqn_eps_decay,
+            train_steps_per_micro=args.dqn_train_steps_per_micro,
+            alpha=args.alpha, beta=args.beta
+        ))
+
+
     # --- ADT baseline (AS): DQN + action-hold + end-of-chunk updates ---
     if args.run_adt and ("adt" in BASELINES):
         adt_cfg_as = DQNConfig(
@@ -3923,6 +4257,7 @@ def main():
     AGENT_REGISTRY["AD"]["GRPO"]    = agent
     AGENT_REGISTRY["AD"]["GFPO-F"]  = gfpo_f_as
     AGENT_REGISTRY["AD"]["GFPO-FR"] = gfpo_fr_as
+    AGENT_REGISTRY["AD"]["DQN_GAMMA_0"] = dqn_as_gamma_0
 
 
 
@@ -3974,6 +4309,17 @@ def main():
             seq_len=K, feat_dim=feat_dim_ht, n_actions=len(HT_DELTAS),
             cfg=dqn_ht_cfg, seed=SEED
         )
+
+        dqn_ht_cfg_gamma_0 = DQNConfig(
+            lr=float(args.dqn_lr),
+            gamma=0,
+            batch_size=int(args.dqn_batch_size),
+            target_update=int(args.dqn_target_update),
+        )
+        dqn_ht_gamma_0 = SeqDQNAgent(
+            seq_len=K, feat_dim=feat_dim_ht, n_actions=len(HT_DELTAS),
+            cfg=dqn_ht_cfg_gamma_0, seed=SEED
+        )
         
         if "constant" in BASELINES:
             controllers_ht.append(ConstantCtrl("Constant", fixed_Ht_cut))
@@ -3992,6 +4338,17 @@ def main():
             alpha=args.alpha, beta=args.beta
             ))
         
+        if "dqn_gamma_0" in BASELINES:
+            controllers_ht.append(DQNCtrlHT(
+            "DQN_GAMMA_0", fixed_Ht_cut, ht_lo, ht_hi,
+            agent=dqn_ht_gamma_0, deltas=HT_DELTAS, step=HT_STEP, max_delta=MAX_DELTA_HT,
+            ht_mid=ht_mid, ht_span=ht_span, near_widths=near_widths_ht, K=K,
+            target=target, tol=tol,
+            eps_min=args.dqn_eps_min, eps_decay=args.dqn_eps_decay,
+            train_steps_per_micro=args.dqn_train_steps_per_micro,
+            alpha=args.alpha, beta=args.beta
+            ))
+
         # --- ADT baseline (HT) ---
         if args.run_adt and ("adt" in BASELINES):
             adt_cfg_ht = DQNConfig(
@@ -4034,11 +4391,10 @@ def main():
                 target=target,
                 tol=tol,
                 mode="lex",        # "lex" recommended
-                mix=0.75,
-                alpha_sig=1.0,
-                beta_move=0.02,
+                mix=args.alpha, #increase for tt
+                beta_move=args.beta,
                 gamma_stab=0.25,
-                k_violate=5.0,
+                k_violate=args.violation_penalty,
                 w_occ=float(args.occ_pen)
                 )
             )
@@ -4112,6 +4468,7 @@ def main():
         AGENT_REGISTRY["HT"]["GRPO"]    = agent_ht
         AGENT_REGISTRY["HT"]["GFPO-F"]  = gfpo_f_ht
         AGENT_REGISTRY["HT"]["GFPO-FR"] = gfpo_fr_ht
+        AGENT_REGISTRY["HT"]["DQN_GAMMA_0"] = dqn_ht_gamma_0
         
 
         
@@ -4144,11 +4501,10 @@ def main():
                 target=target,
                 tol=tol,
                 mode="lex",        # "lex" recommended
-                mix=0.75,
-                alpha_sig=1.0,
-                beta_move=0.02,
+                mix=args.alpha, #increase for tt
+                beta_move=args.beta,
                 gamma_stab=0.25,
-                k_violate=5.0,
+                k_violate=args.violation_penalty,
                 w_occ=float(args.occ_pen)
             )
         )
@@ -4308,7 +4664,7 @@ def main():
 
             for ctrl in controllers_as:
             # only micro-step for methods that actually update on micro
-                if ctrl.name in ("DQN", "ADT", "GRPO", "GFPO-F", "GFPO-FR", "PPO"):
+                if ctrl.name in ("DQN", "ADT", "GRPO", "GFPO-F", "GFPO-FR", "PPO", "DQN_GAMMA_0"):
                     out = ctrl.step_micro(
                         chunk=t,
                         bas_w=bas_w, bnpv_w=bnpv_w,
@@ -4329,7 +4685,7 @@ def main():
                 bht_j = Bht[idx_eval]
 
                 for ctrl in controllers_ht:
-                    if ctrl.name in ("DQN", "ADT", "GRPO", "GFPO-F", "GFPO-FR", "PPO"):
+                    if ctrl.name in ("DQN", "ADT", "GRPO", "GFPO-F", "GFPO-FR", "PPO", "DQN_GAMMA_0"):
                         out = ctrl.step_micro(
                             chunk=t,
                             bht_w=bht_w, bnpv_w=bnpv_w_ht,
