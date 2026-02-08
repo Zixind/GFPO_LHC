@@ -47,9 +47,8 @@ class GRPORewardCfg:
     mix: float = 0.5           # mix*tt + (1-mix)*aa (both in percent units before /100)
 
     # in-band weights / penalties
-    alpha_sig: float = 1.0     # scales signal term (after /100)
     beta_move: float = 0.02    # |delta|/max_delta
-    gamma_stab: float = 0.25   # (|bg-bg_prev|/tol)^2
+    gamma_stab: float = 0.02   # (|bg-bg_prev|/tol)^2
     w_occ: float = 0.0         # occupancy penalty multiplier (optional)
 
     # out-of-band strength (lexicographic mode)
@@ -82,37 +81,68 @@ class GRPOConfig:
     max_grad_norm: float = 1.0
     device: str = "cpu"
 
+# DEBUG originally used
+# class SeqPolicy(nn.Module):
+#     """
+#     Simple sequence -> logits policy.
+#     Input: (B, K, F)
+#     Output: (B, A)
+#     """
+#     def __init__(self, feat_dim: int, n_actions: int, hidden: int = 128):
+#         super().__init__()
+#         self.feat_dim = feat_dim
+#         self.n_actions = n_actions
+
+#         # Pool sequence with mean/max + last token, then MLP
+#         in_dim = 3 * feat_dim
+#         self.mlp = nn.Sequential(
+#             nn.Linear(in_dim, hidden),
+#             nn.ReLU(),
+#             nn.Linear(hidden, hidden),
+#             nn.ReLU(),
+#             nn.Linear(hidden, n_actions),
+#         )
+
+#     def forward(self, x: torch.Tensor) -> torch.Tensor:
+#         # x: (B,K,F)
+#         mean = x.mean(dim=1)
+#         mx, _ = x.max(dim=1)
+#         last = x[:, -1, :]
+#         h = torch.cat([mean, mx, last], dim=-1)
+#         return self.mlp(h)
 
 class SeqPolicy(nn.Module):
     """
-    Simple sequence -> logits policy.
-    Input: (B, K, F)
-    Output: (B, A)
-    """
-    def __init__(self, feat_dim: int, n_actions: int, hidden: int = 128):
-        super().__init__()
-        self.feat_dim = feat_dim
-        self.n_actions = n_actions
+    Lightweight sequence -> logits policy.
+    Input:  x of shape (B, K, F)
+    Output: logits of shape (B, A)
 
-        # Pool sequence with mean/max + last token, then MLP
-        in_dim = 3 * feat_dim
-        self.mlp = nn.Sequential(
-            nn.Linear(in_dim, hidden),
-            nn.ReLU(),
-            nn.Linear(hidden, hidden),
-            nn.ReLU(),
-            nn.Linear(hidden, n_actions),
+    Architecture: 1-layer GRU encoder + linear head
+      - GRU: feat_dim -> hidden
+      - Head: hidden -> n_actions
+    """
+    def __init__(self, feat_dim: int, n_actions: int, hidden: int = 32):
+        super().__init__()
+        self.feat_dim = int(feat_dim)
+        self.n_actions = int(n_actions)
+
+        # Single-layer GRU (num_layers=1 by default)
+        self.gru = nn.GRU(
+            input_size=self.feat_dim,
+            hidden_size=int(hidden),
+            num_layers=1,
+            batch_first=True,
         )
 
+        # Single linear projection to action logits
+        self.head = nn.Linear(int(hidden), self.n_actions)
+
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        # x: (B,K,F)
-        mean = x.mean(dim=1)
-        mx, _ = x.max(dim=1)
-        last = x[:, -1, :]
-        h = torch.cat([mean, mx, last], dim=-1)
-        return self.mlp(h)
-
-
+        # x: (B, K, F)
+        _, h = self.gru(x)      # h: (1, B, hidden)
+        h_last = h[-1]          # (B, hidden)
+        return self.head(h_last)  # (B, A)
+    
 class GRPOBuffer:
     """
     Stores group samples: (obs, action, old_logp, adv)
@@ -274,6 +304,7 @@ class GRPOAgent:
         prev_bg: Optional[float] = None,
         occ_mid: float = 0.0,
         update_dual: bool = False,
+        signal_multiplier: float = 1.0, #signal multiplier for scaling the reward
     ) -> float:
         """
         GRPO reward. Uses self.reward_cfg.
@@ -314,20 +345,22 @@ class GRPOAgent:
         sig_mix = float(rcfg.mix) * tt + (1.0 - float(rcfg.mix)) * aa
 
         # TT as a *constraint* (penalty only if below floor)
-        tt_short = max(0.0, float(rcfg.tt_floor) - tt)
-        tt_floor_pen = float(rcfg.k_tt_floor) * tt_short
+        # tt_short = max(0.0, float(rcfg.tt_floor) - tt)
+        # tt_floor_pen = float(rcfg.k_tt_floor) * tt_short
 
 
         # ---------- lexicographic (constraint-first) ----------
         if rcfg.mode.lower().startswith("lex"):
             if err > 1.0:
-                # outside band: ignore signal completely; only punish violation keep a tiny AA preference to break ties
-                r = - rcfg.k_violate * violation - tt_floor_pen + rcfg.eps_sig_oob * sig_mix
+                # outside band:  only punish violation keep a tiny AA preference to break ties
+                r = - rcfg.k_violate * violation 
+                # - tt_floor_pen 
+                +  signal_multiplier * sig_mix
             else:
                 # in-band: reward physics and regularize actuation 
                 r = (
-                    rcfg.alpha_sig * sig_mix
-                    - tt_floor_pen
+                    signal_multiplier * sig_mix
+                    # - tt_floor_pen
                     - rcfg.beta_move * move_pen
                     - rcfg.gamma_stab * stab_pen
                     - rcfg.w_occ * float(occ_mid) * move_pen
@@ -340,12 +373,12 @@ class GRPOAgent:
         # r = signal - lam*violation - penalties
         lam = float(self.dual_lam)
         r = (
-            rcfg.alpha_sig * sig_mix
+            signal_multiplier * sig_mix
             - lam * violation
             - rcfg.beta_move * move_pen
             - rcfg.gamma_stab * stab_pen
             - rcfg.w_occ * float(occ_mid) * move_pen
-            - tt_floor_pen
+            # - tt_floor_pen
         )
 
         # Update dual ONLY on executed action (set update_dual=True there)
