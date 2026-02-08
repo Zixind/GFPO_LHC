@@ -531,6 +531,15 @@ class SeqQNet(nn.Module):
         h = h[-1]               # (B, hidden)
         return self.head(h)
 
+class SeqQNet_ligher(nn.Module):
+    def __init__(self, feat_dim: int, n_actions: int, hidden: int = 32):
+        super().__init__()
+        self.gru = nn.GRU(input_size=feat_dim, hidden_size=hidden, batch_first=True)
+        self.head = nn.Linear(hidden, n_actions)
+
+    def forward(self, x):
+        _, h = self.gru(x)          # h: (1, B, hidden)
+        return self.head(h[-1])     # (B, n_actions)
 
 class ReplayBufferSeq:
     def __init__(self, capacity: int = 50_000):
