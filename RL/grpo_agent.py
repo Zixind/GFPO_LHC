@@ -178,7 +178,7 @@ class GRPOBuffer:
 
 
 class GRPOAgent:
-    def __init__(self, seq_len: int, feat_dim: int, n_actions: int, cfg: GRPOConfig, seed: int = 0,
+    def __init__(self, seq_len: int, feat_dim: int, n_actions: int, cfg: GRPOConfig, beta: float, alpha: float, lambda_1: float, seed: int = 0,
                  reward_cfg: Optional[GRPORewardCfg] = None):
         self.seq_len = int(seq_len)
         self.feat_dim = int(feat_dim)
@@ -200,6 +200,10 @@ class GRPOAgent:
         self._update_count = 0
         self.reward_cfg = reward_cfg
         self.dual_lam = float(reward_cfg.dual_init) if reward_cfg is not None else 0.0
+
+        self.beta = beta,
+        self.alpha = alpha,
+        self.lambda_1 = lambda_1
 
     @torch.no_grad()
     def dist(self, obs: np.ndarray) -> torch.distributions.Categorical:
@@ -305,6 +309,9 @@ class GRPOAgent:
         occ_mid: float = 0.0,
         update_dual: bool = False,
         signal_multiplier: float = 1.0, #signal multiplier for scaling the reward
+        beta: float = 0.02, #lambda_3,
+        lambda_1: float = 0.2, #additional penalty multiplier for the signal term (optional)
+        alpha: float = 0.2, #signal mix NOTE unify with DQN agent
     ) -> float:
         """
         GRPO reward. Uses self.reward_cfg.
@@ -321,9 +328,12 @@ class GRPOAgent:
 
         # normalized band error
         err = abs(float(bg_after) - float(rcfg.target)) / tol
+        track = err # for rate tracking
+
+
         # violation = max(0.0, err - 1.0)   # 0 in-band, positive out-of-band
 
-            # Rate Tracking: reward being within tolerance, penalize being outside
+         # Rate Tracking: reward being within tolerance, penalize being outside
         if err <= 1.0:
             # no violation
             violation = 0
@@ -331,7 +341,7 @@ class GRPOAgent:
             # linear penalty outside band, continuous at ae=1
             violation = - (err - 1.0)
 
-        move_pen = abs(float(delta_applied)) / max_delta
+        move_pen = abs(float(delta_applied)) / max_delta #moving penalty for lambda_3
 
         if prev_bg is None:
             stab_pen = 0.0
@@ -342,51 +352,52 @@ class GRPOAgent:
         # signal term (normalize to ~[0,1])
         tt = float(tt_after) / 100.0
         aa = float(aa_after) / 100.0
-        sig_mix = float(rcfg.mix) * tt + (1.0 - float(rcfg.mix)) * aa
+        # sig_mix = float(rcfg.mix) * tt + (1.0 - float(rcfg.mix)) * aa
+        sig_mix = alpha * tt + (1.0 - alpha) * aa
 
         # TT as a *constraint* (penalty only if below floor)
         # tt_short = max(0.0, float(rcfg.tt_floor) - tt)
         # tt_floor_pen = float(rcfg.k_tt_floor) * tt_short
-
-
-        # ---------- lexicographic (constraint-first) ----------
-        if rcfg.mode.lower().startswith("lex"):
-            if err > 1.0:
-                # outside band:  only punish violation keep a tiny AA preference to break ties
-                r = - rcfg.k_violate * violation 
-                # - tt_floor_pen 
-                +  signal_multiplier * sig_mix
-            else:
-                # in-band: reward physics and regularize actuation 
-                r = (
-                    signal_multiplier * sig_mix
-                    # - tt_floor_pen
-                    - rcfg.beta_move * move_pen
-                    - rcfg.gamma_stab * stab_pen
-                    - rcfg.w_occ * float(occ_mid) * move_pen
-                )
-
-            lo, hi = rcfg.clip
-            return float(np.clip(r, lo, hi))
-
-        # ---------- Mode B: Lagrangian (adaptive lambda) ----------
-        # r = signal - lam*violation - penalties
-        lam = float(self.dual_lam)
-        r = (
-            signal_multiplier * sig_mix
-            - lam * violation
-            - rcfg.beta_move * move_pen
-            - rcfg.gamma_stab * stab_pen
-            - rcfg.w_occ * float(occ_mid) * move_pen
-            # - tt_floor_pen
-        )
-
-        # Update dual ONLY on executed action (set update_dual=True there)
-        if update_dual:
-            lam_new = lam + float(rcfg.dual_lr) * float(violation)
-            self.dual_lam = float(np.clip(lam_new, rcfg.dual_min, rcfg.dual_max))
-
+        r = lambda_1 * track + (1 - lambda_1) * sig_mix - beta * move_pen
         lo, hi = rcfg.clip
+        # # ---------- lexicographic (constraint-first) ----------
+        # if rcfg.mode.lower().startswith("lex"):
+        #     if err > 1.0:
+        #         # outside band:  only punish violation keep a tiny AA preference to break ties
+        #         r = - rcfg.k_violate * violation 
+        #         # - tt_floor_pen 
+        #         +  signal_multiplier * sig_mix
+        #     else:
+        #         # in-band: reward physics and regularize actuation 
+        #         r = (
+        #             signal_multiplier * sig_mix
+        #             # - tt_floor_pen
+        #             - rcfg.beta_move * move_pen
+        #             - rcfg.gamma_stab * stab_pen
+        #             - rcfg.w_occ * float(occ_mid) * move_pen
+        #         )
+
+        #     lo, hi = rcfg.clip
+        #     return float(np.clip(r, lo, hi))
+
+        # # ---------- Mode B: Lagrangian (adaptive lambda) ----------
+        # # r = signal - lam*violation - penalties
+        # lam = float(self.dual_lam)
+        # r = (
+        #     signal_multiplier * sig_mix
+        #     - lam * violation
+        #     - rcfg.beta_move * move_pen
+        #     - rcfg.gamma_stab * stab_pen
+        #     - rcfg.w_occ * float(occ_mid) * move_pen
+        #     # - tt_floor_pen
+        # )
+
+        # # Update dual ONLY on executed action (set update_dual=True there)
+        # if update_dual:
+        #     lam_new = lam + float(rcfg.dual_lr) * float(violation)
+        #     self.dual_lam = float(np.clip(lam_new, rcfg.dual_min, rcfg.dual_max))
+
+        # lo, hi = rcfg.clip
         return float(np.clip(r, lo, hi))
 
 

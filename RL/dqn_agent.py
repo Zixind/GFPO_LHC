@@ -454,12 +454,28 @@ def compute_reward(
     delta_applied: float,
     max_delta: float,
     alpha: float = 0.2,
-    beta: float = 0.02,
+    beta: float = 0.02, #lambda_3
     clip: Tuple[float, float] = (-10.0, 10.0),
     prev_bg_rate: Optional[float] = None,
     gamma_stab: float = 0.25, # weight for stability penalty 0.25 default
+    lambda_1: float = 0.5, #ablation study for reward: bg rate tracking
 ) -> float:
-    """
+    r"""
+    Input: lambda_1, lambda_2, lambda_3 are for rate tracking, signal efficiency, and move penalty, respectively.
+    When do ablation study we will make lambda_2 as 1-lambda_1
+    max_delta is the maximum allowed change in threshold per step, used to normalize the move penalty.
+    beta is lambda_3
+
+
+    R_t^{\cdot}
+    =
+    \underbrace{\lambda_{1}\!\left(\frac{|r_{t+1}^{\cdot}-r^\star_{B}|}{\tau}\right)}_{\text{rate tracking}}
+    +
+    \lambda_{2}\underbrace{\Big(\alpha \epsilon_{t+1}^{\ttbarraw,\cdot}+(1-\alpha) \epsilon_{t+1}^{\haaFourB,\cdot}\Big)}_{\text{signal efficiency}}
+    -
+    \lambda_{3}\underbrace{\left(\frac{|\Delta \threshold _{t-1}^{\cdot}|}{\Delta \threshold _{\max}^{\cdot}}\right)}_{\text{move penalty}}
+
+
     sig_rate_1: first signal rate (e.g. TTbar) focuses more on TTbar
     sig_rate_2: second signal rate (e.g. HToAATo4B)
 
@@ -474,26 +490,30 @@ def compute_reward(
     max_delta = max(1e-12, float(max_delta))
 
     # normalized error
-    e = (float(bg_rate) - float(target)) / tol
+    e = (float(bg_rate) - float(target)) / tol #rate tracking
     ae = abs(e)
+    track = ae # rate tracking
 
-    # Rate Tracking: reward being within tolerance, penalize being outside
-    if ae <= 1.0:
-        # max +1 at center; smoothly decreases to 0 at band edge
-        track = 1.0 - ae**2
-    else:
-        # linear penalty outside band, continuous at ae=1
-        track = - (ae - 1.0)
+    # # Rate Tracking: reward being within tolerance, penalize being outside
+    # if ae <= 1.0:
+    #     # max +1 at center; smoothly decreases to 0 at band edge
+    #     track = 1.0 - ae**2
+    # else:
+    #     # linear penalty outside band, continuous at ae=1
+    #     track = - (ae - 1.0)
 
 
     # bg_pen = abs(float(bg_rate) - float(target)) / tol
     # sig_term = 0.5 * (2 * float(sig_rate_1) + float(sig_rate_2)) / 100.0
 
     # signal mix in ~[0,1]
+    # signal efficiency (lambda_2)
     tt = float(sig_rate_1) / 100.0
     aa = float(sig_rate_2) / 100.0
     sig_term = float(alpha) * tt + (1.0 - alpha) * aa #alpha ttbar focus
 
+
+    # moving penalty (lambda_3)
     move_pen = abs(float(delta_applied)) / max_delta
 
     if prev_bg_rate is None:
@@ -502,7 +522,7 @@ def compute_reward(
         db = abs(float(bg_rate) - float(prev_bg_rate)) / tol
         stab_pen = db * db
     # r = -bg_pen + alpha * sig_term - beta * move_pen
-    r = track + sig_term - beta * move_pen - gamma_stab * stab_pen
+    r = lambda_1 * track + (1 - lambda_1) * sig_term - beta * move_pen  #- gamma_stab * stab_pen
     lo, hi = clip 
     return float(np.clip(r, lo, hi))
 
@@ -586,6 +606,7 @@ class SeqDQNAgent:
         seq_len: int,
         feat_dim: int,
         n_actions: int,
+        lambda_1: float,
         seed: int = 0,
         device: Optional[str] = None,
         cfg: Optional[DQNConfig] = None,
@@ -609,6 +630,7 @@ class SeqDQNAgent:
         self.opt = optim.Adam(self.q.parameters(), lr=self.cfg.lr)
         self.buf = ReplayBufferSeq(capacity=self.cfg.buffer_capacity)
         self.train_steps = 0
+        self.lambda_1 = lambda_1
 
     def act(self, obs_seq: np.ndarray, eps: float = 0.1) -> int:
         if random.random() < eps:
@@ -661,6 +683,7 @@ class SeqDQNAgent:
         sig_rate_2: float,
         delta_applied: float,
         max_delta: float,
+        lambda_1: float,
         alpha: float = 0.2,
         beta: float = 0.02,
         clip: tuple[float, float] = (-10.0, 10.0),
@@ -681,6 +704,7 @@ class SeqDQNAgent:
             clip=clip,
             prev_bg_rate=prev_bg_rate,
             gamma_stab=gamma_stab,
+            lambda_1 = lambda_1
         )
 
 

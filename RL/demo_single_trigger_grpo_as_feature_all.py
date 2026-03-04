@@ -190,7 +190,7 @@ def plot_early_abs_err_hist(grpo_ae, gfpo_ae, *, title, outpath, run_label):
     save_png(fig, str(outpath))
     plt.close(fig)
 
-PLOT_METHODS = ["Constant", "PID", "ADT", "DQN", "DQN-F", "PPO", "GRPO", "GFPO-F", "GFPO-FR"]
+PLOT_METHODS = ["Constant", "PID", "DQN", "DQN-F", "PPO", "ADT", "GRPO", "GFPO-F", "GFPO-FR"]
 
 def select_plot_methods(d):
     """
@@ -373,7 +373,7 @@ class PIDCtrlHT(BaseCtrl):
     
 class DQNCtrl(BaseCtrl):
     def __init__(self, name, init_cut, lo, hi, *, agent, deltas, step, max_delta, as_mid, as_span,
-                 near_widths, K, target, tol, eps_min, eps_decay, train_steps_per_micro, alpha, beta):
+                 near_widths, K, target, tol, eps_min, eps_decay, train_steps_per_micro, alpha, beta, lambda_1):
         self.name = name
         self.cut = float(init_cut)
         self.lo, self.hi = float(lo), float(hi)
@@ -388,6 +388,7 @@ class DQNCtrl(BaseCtrl):
         self.eps_min, self.eps_decay = float(eps_min), float(eps_decay)
         self.train_steps_per_micro = int(train_steps_per_micro)
         self.alpha, self.beta = float(alpha), float(beta)
+        self.lambda_1 = float(lambda_1)
 
         self.prev_bg = None
         self.last_delta = 0.0
@@ -450,7 +451,7 @@ class DQNCtrl(BaseCtrl):
             sig_rate_1=tt_after, sig_rate_2=aa_after,
             delta_applied=dlt, max_delta=self.max_delta,
             alpha=self.alpha, beta=self.beta,
-            prev_bg_rate=bg_before, gamma_stab=0.3
+            prev_bg_rate=bg_before, gamma_stab=0.3, lambda_1=self.lambda_1
         ))
 
         self.agent.buf.push(obs, a, r, obs_next, done=False)
@@ -468,7 +469,7 @@ class DQNCtrl(BaseCtrl):
 class DQNCtrlHT(BaseCtrl):
     def __init__(self, name, init_cut, lo, hi, *, agent, deltas, step, max_delta,
                  ht_mid, ht_span, near_widths, K, target, tol, eps_min, eps_decay,
-                 train_steps_per_micro, alpha, beta):
+                 train_steps_per_micro, alpha, beta, lambda_1):
         self.name = name
         self.cut = float(init_cut)
         self.lo, self.hi = float(lo), float(hi)
@@ -488,6 +489,7 @@ class DQNCtrlHT(BaseCtrl):
         self.last_delta = 0.0
         self.err_i = 0.0
         self.step_count = 0
+        self.lambda_1 = lambda_1
 
     def cut_value(self): 
         return self.cut
@@ -545,7 +547,7 @@ class DQNCtrlHT(BaseCtrl):
             sig_rate_1=tt_after, sig_rate_2=aa_after,
             delta_applied=dlt, max_delta=self.max_delta,
             alpha=self.alpha, beta=self.beta,
-            prev_bg_rate=bg_before, gamma_stab=0.3
+            prev_bg_rate=bg_before, gamma_stab=0.3, lambda_1=self.lambda_1
         ))
 
         self.agent.buf.push(obs, a, r, obs_next, done=False)
@@ -629,7 +631,7 @@ class DQNFrozenCtrl(DQNCtrl):
             sig_rate_1=tt_after, sig_rate_2=aa_after,
             delta_applied=dlt, max_delta=self.max_delta,
             alpha=self.alpha, beta=self.beta,
-            prev_bg_rate=bg_before, gamma_stab=0.3
+            prev_bg_rate=bg_before, gamma_stab=0.3, lambda_1=self.lambda_1
         ))
 
         # ONLY train during early chunks
@@ -716,7 +718,7 @@ class DQNFrozenCtrlHT(DQNCtrlHT):
             sig_rate_1=tt_after, sig_rate_2=aa_after,
             delta_applied=dlt, max_delta=self.max_delta,
             alpha=self.alpha, beta=self.beta,
-            prev_bg_rate=bg_before, gamma_stab=0.3
+            prev_bg_rate=bg_before, gamma_stab=0.3, lambda_1=self.lambda_1
         ))
 
         if train_mode:
@@ -814,7 +816,7 @@ class ADTCtrl(DQNCtrl):
                 sig_rate_1=tt_after, sig_rate_2=aa_after,
                 delta_applied=dlt, max_delta=self.max_delta,
                 alpha=self.alpha, beta=self.beta,
-                prev_bg_rate=bg_before, gamma_stab=0.3
+                prev_bg_rate=bg_before, gamma_stab=0.3, lambda_1=self.lambda_1
             ))
 
         # store transition (NO training here)
@@ -912,7 +914,7 @@ class ADTCtrlHT(DQNCtrlHT):
                 sig_rate_1=tt_after, sig_rate_2=aa_after,
                 delta_applied=dlt, max_delta=self.max_delta,
                 alpha=self.alpha, beta=self.beta,
-                prev_bg_rate=bg_before, gamma_stab=0.3
+                prev_bg_rate=bg_before, gamma_stab=0.3, lambda_1=self.lambda_1
             ))
 
         self.agent.buf.push(obs, a, float(r), obs_next, done=False)
@@ -995,6 +997,7 @@ class PPOCtrl(BaseCtrl):
         tol,
         alpha,
         beta,
+        lambda_1,
         ppo_temperature=1.0,
         use_shield=True,
     ):
@@ -1019,6 +1022,7 @@ class PPOCtrl(BaseCtrl):
 
         self.ppo_temperature = float(ppo_temperature)
         self.use_shield = bool(use_shield)
+        self.lambda_1 = lambda_1
 
         self._last_obs_next: Optional[np.ndarray] = None  # bootstrap value at end_chunk
 
@@ -1118,7 +1122,7 @@ class PPOCtrl(BaseCtrl):
                 alpha=self.alpha,
                 beta=self.beta,
                 prev_bg_rate=bg_before,
-                gamma_stab=0.3,
+                gamma_stab=0.3, lambda_1=self.lambda_1
             )
         )
 
@@ -1168,6 +1172,7 @@ class PPOCtrlHT(BaseCtrl):
         tol,
         alpha,
         beta,
+        lambda_1,
         ppo_temperature=1.0,
         use_shield=True,
     ):
@@ -1192,6 +1197,7 @@ class PPOCtrlHT(BaseCtrl):
 
         self.ppo_temperature = float(ppo_temperature)
         self.use_shield = bool(use_shield)
+        self.lambda_1 = lambda_1
 
         self._last_obs_next: Optional[np.ndarray] = None
 
@@ -1289,6 +1295,7 @@ class PPOCtrlHT(BaseCtrl):
                 beta=self.beta,
                 prev_bg_rate=bg_before,
                 gamma_stab=0.3,
+                lambda_1=self.lambda_1,
             )
         )
 
@@ -1316,7 +1323,7 @@ class GRPOCtrl(BaseCtrl):
     Plain GRPO: sample G actions, train on all, execute best reward.
     """
     def __init__(self, name, init_cut, lo, hi, *, agent, deltas, step, max_delta, as_mid, as_span,
-                 near_widths, K, target, tol, train_every, temperature, signal_multiplier, group_size_keep: int):
+                 near_widths, K, target, tol, train_every, temperature, signal_multiplier, group_size_keep: int, beta: float, lambda_1: float, alpha: float):
         self.name = name
         self.cut = float(init_cut)
         self.lo, self.hi = float(lo), float(hi)
@@ -1337,6 +1344,9 @@ class GRPOCtrl(BaseCtrl):
         self.micro_counter = 0
         self.group_size_keep = int(group_size_keep)
         self.signal_multiplier = signal_multiplier
+        self.beta = beta
+        self.lambda_1 = lambda_1
+        self.alpha = alpha
 
     def cut_value(self): return self.cut
 
@@ -1377,7 +1387,7 @@ class GRPOCtrl(BaseCtrl):
             r = float(self.agent.compute_reward(
                 bg_after=bg_after, tt_after=tt_after, aa_after=aa_after,
                 delta_applied=dlt, max_delta=self.max_delta,
-                prev_bg=bg_before, occ_mid=occ_mid, update_dual=False, signal_multiplier = self.signal_multiplier
+                prev_bg=bg_before, occ_mid=occ_mid, update_dual=False, signal_multiplier = self.signal_multiplier, beta = self.beta, lambda_1 = self.lambda_1, alpha = self.alpha
             ))
             cand_r[k] = r
 
@@ -1414,7 +1424,7 @@ class GRPOCtrl(BaseCtrl):
         r_exec = float(self.agent.compute_reward(
             bg_after=bg_after, tt_after=tt_after, aa_after=aa_after,
             delta_applied=d_exec, max_delta=self.max_delta,
-            prev_bg=bg_before, occ_mid=occ_mid, update_dual=True, signal_multiplier = self.signal_multiplier
+            prev_bg=bg_before, occ_mid=occ_mid, update_dual=True, signal_multiplier = self.signal_multiplier, beta = self.beta, lambda_1 = self.lambda_1, alpha = self.alpha
         ))
 
         if grpo_samples is not None:
@@ -1480,7 +1490,7 @@ class GRPOFilterCtrl(GRPOCtrl):
             r = float(self.agent.compute_reward(
                 bg_after=bg_after, tt_after=tt_after, aa_after=aa_after,
                 delta_applied=dlt, max_delta=self.max_delta,
-                prev_bg=bg_before, occ_mid=occ_mid, update_dual=False, signal_multiplier=self.signal_multiplier
+                prev_bg=bg_before, occ_mid=occ_mid, update_dual=False, signal_multiplier=self.signal_multiplier, beta = self.beta, lambda_1 = self.lambda_1, alpha = self.alpha
             ))
             cand_r[k] = r
             cand_bg[k] = bg_after
@@ -1547,7 +1557,7 @@ class GRPOFilterCtrl(GRPOCtrl):
         r_exec = float(self.agent.compute_reward(
             bg_after=bg_after, tt_after=tt_after, aa_after=aa_after,
             delta_applied=d_exec, max_delta=self.max_delta,
-            prev_bg=bg_before, occ_mid=occ_mid, update_dual=True, signal_multiplier=self.signal_multiplier
+            prev_bg=bg_before, occ_mid=occ_mid, update_dual=True, signal_multiplier=self.signal_multiplier, beta = self.beta, lambda_1 = self.lambda_1, alpha = self.alpha
         ))
 
         if grpo_samples is not None:
@@ -1583,8 +1593,8 @@ class GFPOCtrl(GRPOCtrl):
           execute best kept (k_best = keep[0] for feasible_first_sig).
     """
     def __init__(self, *args, gfpo_filter="abs_err_topk", group_size_sample=32, group_size_keep=16,
-                 feas_mult=1.0, mix=0.80, band_mult=1.0, sig_bonus=1.0, **kwargs):
-        super().__init__(*args, group_size_keep=group_size_keep, **kwargs)
+                 feas_mult=1.0, mix=0.80, band_mult=1.0, sig_bonus=1.0, beta = None, lambda_1 = None, alpha = None, **kwargs):
+        super().__init__(*args, group_size_keep=group_size_keep, beta = beta, lambda_1 = lambda_1, alpha = alpha, **kwargs)
         self.gfpo_filter = str(gfpo_filter)
         self.G_sample = int(group_size_sample)
         self.G_keep = int(group_size_keep)
@@ -1625,7 +1635,7 @@ class GFPOCtrl(GRPOCtrl):
             r_raw = float(self.agent.compute_reward(
                 bg_after=bg_after, tt_after=tt_after, aa_after=aa_after,
                 delta_applied=dlt, max_delta=self.max_delta,
-                prev_bg=bg_before, occ_mid=occ_mid, update_dual=False, signal_multiplier=self.signal_multiplier
+                prev_bg=bg_before, occ_mid=occ_mid, update_dual=False, signal_multiplier=self.signal_multiplier, beta = self.beta, lambda_1 = self.lambda_1, alpha = self.alpha
             ))
 
             abs_err = abs(bg_after - self.target)
@@ -1698,7 +1708,7 @@ class GFPOCtrl(GRPOCtrl):
         r_exec = float(self.agent.compute_reward(
             bg_after=bg_after, tt_after=tt_after, aa_after=aa_after,
             delta_applied=d_exec, max_delta=self.max_delta,
-            prev_bg=bg_before, occ_mid=occ_mid, update_dual=True, signal_multiplier=self.signal_multiplier
+            prev_bg=bg_before, occ_mid=occ_mid, update_dual=True, signal_multiplier=self.signal_multiplier, beta = self.beta, lambda_1 = self.lambda_1, alpha = self.alpha
         ))
 
         if grpo_samples is not None:
@@ -1734,7 +1744,7 @@ class GRPOCtrlHT(BaseCtrl):
     HT version of GRPOCtrl (same logic; uses make_event_seq_ht and HT arrays).
     """
     def __init__(self, name, init_cut, lo, hi, *, agent, deltas, step, max_delta,
-                 ht_mid, ht_span, near_widths, K, target, tol, train_every, temperature, signal_multiplier, group_size_keep: int):
+                 ht_mid, ht_span, near_widths, K, target, tol, train_every, temperature, signal_multiplier, group_size_keep: int, beta: float, lambda_1: float, alpha: float):
         self.name = name
         self.cut = float(init_cut)
         self.lo, self.hi = float(lo), float(hi)
@@ -1755,6 +1765,9 @@ class GRPOCtrlHT(BaseCtrl):
         self.micro_counter = 0
         self.group_size_keep = int(group_size_keep)
         self.signal_multiplier = signal_multiplier
+        self.beta = beta
+        self.lambda_1 = lambda_1
+        self.alpha = alpha
 
     def cut_value(self): return self.cut
 
@@ -1795,7 +1808,7 @@ class GRPOCtrlHT(BaseCtrl):
             r = float(self.agent.compute_reward(
                 bg_after=bg_after, tt_after=tt_after, aa_after=aa_after,
                 delta_applied=dlt, max_delta=self.max_delta,
-                prev_bg=bg_before, occ_mid=occ_mid, update_dual=False, signal_multiplier=self.signal_multiplier
+                prev_bg=bg_before, occ_mid=occ_mid, update_dual=False, signal_multiplier=self.signal_multiplier, beta = self.beta, lambda_1 = self.lambda_1, alpha = self.alpha
             ))
             cand_r[k] = r
 
@@ -1832,7 +1845,7 @@ class GRPOCtrlHT(BaseCtrl):
         r_exec = float(self.agent.compute_reward(
             bg_after=bg_after, tt_after=tt_after, aa_after=aa_after,
             delta_applied=d_exec, max_delta=self.max_delta,
-            prev_bg=bg_before, occ_mid=occ_mid, update_dual=True, signal_multiplier=self.signal_multiplier
+            prev_bg=bg_before, occ_mid=occ_mid, update_dual=True, signal_multiplier=self.signal_multiplier, beta = self.beta, lambda_1 = self.lambda_1, alpha = self.alpha
         ))
 
         if grpo_samples is not None:
@@ -1897,7 +1910,7 @@ class GRPOFilterCtrlHT(GRPOCtrlHT):
             r = float(self.agent.compute_reward(
                 bg_after=bg_after, tt_after=tt_after, aa_after=aa_after,
                 delta_applied=dlt, max_delta=self.max_delta,
-                prev_bg=bg_before, occ_mid=occ_mid, update_dual=False, signal_multiplier=self.signal_multiplier
+                prev_bg=bg_before, occ_mid=occ_mid, update_dual=False, signal_multiplier=self.signal_multiplier, beta = self.beta, lambda_1 = self.lambda_1, alpha = self.alpha
             ))
             cand_r[k] = r
             cand_bg[k] = bg_after
@@ -1959,7 +1972,7 @@ class GRPOFilterCtrlHT(GRPOCtrlHT):
         r_exec = float(self.agent.compute_reward(
             bg_after=bg_after, tt_after=tt_after, aa_after=aa_after,
             delta_applied=d_exec, max_delta=self.max_delta,
-            prev_bg=bg_before, occ_mid=occ_mid, update_dual=True, signal_multiplier=self.signal_multiplier
+            prev_bg=bg_before, occ_mid=occ_mid, update_dual=True, signal_multiplier=self.signal_multiplier, beta = self.beta, lambda_1 = self.lambda_1, alpha = self.alpha
         ))
 
         if grpo_samples is not None:
@@ -1994,8 +2007,8 @@ class GFPOCtrlHT(GRPOCtrlHT):
     HT version of GFPOCtrl.
     """
     def __init__(self, *args, gfpo_filter="abs_err_topk", group_size_sample=32, group_size_keep=16,
-                 feas_mult=1.0, mix=0.80, band_mult=1.0, sig_bonus=1.0, **kwargs):
-        super().__init__(*args, group_size_keep=group_size_keep, **kwargs)
+                 feas_mult=1.0, mix=0.80, band_mult=1.0, sig_bonus=1.0, beta = None, lambda_1 = None, alpha = None, **kwargs):
+        super().__init__(*args, group_size_keep=group_size_keep, beta = beta, lambda_1 = lambda_1, alpha = alpha, **kwargs)
         self.gfpo_filter = str(gfpo_filter)
         self.G_sample = int(group_size_sample)
         self.G_keep = int(group_size_keep)
@@ -2036,7 +2049,7 @@ class GFPOCtrlHT(GRPOCtrlHT):
             r_raw = float(self.agent.compute_reward(
                 bg_after=bg_after, tt_after=tt_after, aa_after=aa_after,
                 delta_applied=dlt, max_delta=self.max_delta,
-                prev_bg=bg_before, occ_mid=occ_mid, update_dual=False, signal_multiplier=self.signal_multiplier
+                prev_bg=bg_before, occ_mid=occ_mid, update_dual=False, signal_multiplier=self.signal_multiplier, beta = self.beta, lambda_1 = self.lambda_1, alpha = self.alpha
             ))
 
             abs_err = abs(bg_after - self.target)
@@ -2105,7 +2118,7 @@ class GFPOCtrlHT(GRPOCtrlHT):
         r_exec = float(self.agent.compute_reward(
             bg_after=bg_after, tt_after=tt_after, aa_after=aa_after,
             delta_applied=d_exec, max_delta=self.max_delta,
-            prev_bg=bg_before, occ_mid=occ_mid, update_dual=True, signal_multiplier=self.signal_multiplier
+            prev_bg=bg_before, occ_mid=occ_mid, update_dual=True, signal_multiplier=self.signal_multiplier, beta = self.beta, lambda_1 = self.lambda_1, alpha = self.alpha
         ))
 
         if grpo_samples is not None:
@@ -2484,8 +2497,8 @@ def build_series_from_chunk_rows(chunk_rows, trigger):
             bg_pct=np.array([rr["bg_pct"] for rr in rows], dtype=np.float64),
             bg_khz=np.array([rr["bg_khz"] for rr in rows], dtype=np.float64),
             cut=np.array([rr["cut"] for rr in rows], dtype=np.float64),
-            tt=np.array([rr["tt"] for rr in rows], dtype=np.float64),
-            aa=np.array([rr["aa"] for rr in rows], dtype=np.float64),
+            tt_inband=np.array([rr["tt"] for rr in rows], dtype=np.float64),
+            aa_inband=np.array([rr["aa"] for rr in rows], dtype=np.float64),
             tt_overall=np.array([rr["tt_overall"] for rr in rows], dtype=np.float64),
             aa_overall=np.array([rr["aa_overall"] for rr in rows], dtype=np.float64),
             occ_mid=np.array([rr["occ_mid"] for rr in rows], dtype=np.float64),
@@ -2717,7 +2730,7 @@ def log_chunk_stats(*, chunk, trigger, method, cut, bg_pct, tt, aa, occ_mid, tar
         # ONLY log signal stats if inband
         tt=mask_if_outband(tt, float),
         aa=mask_if_outband(aa, float),
-
+        # log signal stats overall
         tt_overall=float(tt),
         aa_overall=float(aa),
 
@@ -2846,8 +2859,8 @@ def _summarize_window(rows, *, target_pct, tol_pct):
 
     f1_macro = _safe_mean([r.get("f1", np.nan) for r in rows])
 
-    tt_inband = _safe_mean(tt_all[inband_mask]) if np.any(inband_mask) else np.nan
-    aa_inband = _safe_mean(aa_all[inband_mask]) if np.any(inband_mask) else np.nan
+    tt_inband = _safe_mean(tt_all[inband_mask]) if np.any(inband_mask) else 0 #np.nan
+    aa_inband = _safe_mean(aa_all[inband_mask]) if np.any(inband_mask) else 0 #np.nan
     tt_overall = _safe_mean(tt_all)
     aa_overall = _safe_mean(aa_all)
 
@@ -3323,7 +3336,7 @@ def summarize_confusion_from_chunk_rows_split(chunk_rows, *, trigger, method):
     }
 
 
-def summarize_paper_table(r_pct, s_tt, s_aa, cut_hist, target_pct, tol_pct):
+def summarize_paper_table(r_pct, s_tt_inband, s_aa_inband, s_tt_overall, s_aa_overall, cut_hist, target_pct, tol_pct):
     """
     Paper-table metrics (matching screenshot):
 
@@ -3336,8 +3349,12 @@ def summarize_paper_table(r_pct, s_tt, s_aa, cut_hist, target_pct, tol_pct):
       h→4b↑     = mean(AA efficiency | in-band)
     """
     r = np.asarray(r_pct, dtype=np.float64)
-    s_tt = np.asarray(s_tt, dtype=np.float64)
-    s_aa = np.asarray(s_aa, dtype=np.float64)
+    s_tt_inband = np.asarray(s_tt_inband, dtype=np.float64)
+    s_aa_inband = np.asarray(s_aa_inband, dtype=np.float64)
+
+    s_tt_overall = np.asarray(s_tt_overall, dtype=np.float64)
+    s_aa_overall = np.asarray(s_aa_overall, dtype=np.float64)
+
     c = np.asarray(cut_hist, dtype=np.float64)
 
     err = r - float(target_pct)
@@ -3361,8 +3378,11 @@ def summarize_paper_table(r_pct, s_tt, s_aa, cut_hist, target_pct, tol_pct):
 
 
     # Signal efficiencies conditioned on being in-band
-    out["tt"] = np.mean(s_tt) #safe_mean(s_tt, inband)
-    out["h_to_4b"] = np.mean(s_aa) #safe_mean(s_aa, inband)
+    out["tt_inband"] = safe_mean(s_tt_overall, inband) #np.mean(s_tt_inband) #
+    out["aa_inband"] = safe_mean(s_aa_overall, inband) #np.mean(s_aa_inband) #
+
+    out["tt_overall"] = np.mean(s_tt_overall)
+    out["aa_overall"] = np.mean(s_aa_overall)
     return out
 
 
@@ -3379,9 +3399,9 @@ def write_paper_table(rows, out_csv: Path, out_tex: Path, target_pct, tol_pct):
     # ---------------- CSV ----------------
     fieldnames = [
         "Trigger", "Method",
-        "MAE", "P95_abs_err", "InBand", "UpFrac", "DownFrac",
+        "MAE", "P95_abs_err", "InBand", "tt_overall", "aa_overall",
         "TPR", "FPR", "TNR", "FNR", "Precision", "F1",
-        "tt", "h_to_4b",
+        "tt_inband", "aa_inband",
     ]
     with open(out_csv, "w", newline="") as f:
         w = csv.DictWriter(f, fieldnames=fieldnames)
@@ -3390,8 +3410,8 @@ def write_paper_table(rows, out_csv: Path, out_tex: Path, target_pct, tol_pct):
             w.writerow({k: r.get(k, None) for k in fieldnames})
 
     # ---------------- best-per-trigger ----------------
-    higher_better = {"InBand", "tt", "h_to_4b", "TPR", "TNR", "Precision", "F1"}
-    lower_better  = {"MAE", "P95_abs_err", "UpFrac", "DownFrac", "FPR", "FNR"}
+    higher_better = {"InBand", "tt_overall", "aa_overall", "tt_inband", "aa_inband", "TPR", "TNR", "Precision", "F1"}
+    lower_better  = {"MAE", "P95_abs_err", "FPR", "FNR"}
 
     # Force output order
     trigger_order = ["HT", "AD"]
@@ -3484,10 +3504,10 @@ def write_paper_table(rows, out_csv: Path, out_tex: Path, target_pct, tol_pct):
             ("P95_abs_err", 3),
             ("InBand", 3),
             ("tt_overall", 3),
-            ("h_to_4b_overall", 3),
+            ("aa_overall", 3),
             ("TPR", 3), ("FPR", 3), ("TNR", 3), ("FNR", 3), ("Precision", 3), ("F1", 3),
             ("tt_inband", 3),
-            ("h_to_4b_inband", 3),
+            ("aa_inband", 3),
         ]:
             s = fmt_key(key, r.get(key, None), nd=nd)
             s = maybe_bold(tr, m, key, s)
@@ -3612,7 +3632,7 @@ def write_confusion_split_tables_tex(chunk_rows, out_tt_tex: Path, out_h4b_tex: 
 
 
 
-def build_paper_rows_from_chunk_rows(chunk_rows, *, target_pct, tol_pct):
+def build_paper_rows_from_chunk_rows(chunk_rows, *, target_pct, tol_pct, verbose = 1):
     rows_out = []
 
     # NOTE: build_series_from_chunk_rows expects trigger labels that match chunk_rows.
@@ -3623,16 +3643,23 @@ def build_paper_rows_from_chunk_rows(chunk_rows, *, target_pct, tol_pct):
             continue
         
         for method, s in series.items():
+            if verbose > 0:
+                print("DEBUG s:", s)
+                verbose -= 1
             metrics = summarize_paper_table(
                 r_pct=s["bg_pct"],
-                s_tt=s["tt"],
-                s_aa=s["aa"],
+                s_tt_inband=s["tt_inband"],
+                s_aa_inband=s["aa_inband"],
+                s_tt_overall=s["tt_overall"],
+                s_aa_overall=s["aa_overall"],
                 cut_hist=s["cut"],
                 target_pct=target_pct,
                 tol_pct=tol_pct,
             )
-            print("DEBUG: s_tt.shape =", np.asarray(s["tt"]).shape)
-            print("DEBUG: s_aa.shape =", np.asarray(s["aa"]).shape)
+            print("DEBUG: s_tt_overall.shape =", np.asarray(s["tt_overall"]).shape)
+            print("DEBUG: s_aa_overall.shape =", np.asarray(s["aa_overall"]).shape)
+
+            
 
             row = {"Trigger": ("AD" if trig == "AD" else trig), "Method": method, **metrics}
             row.update(summarize_confusion_from_chunk_rows(
@@ -4079,7 +4106,8 @@ def main():
     ap.add_argument("--tol", type=float, default=0.025,     # percent  (0.025% -> ±10kHz band)
                     help="tolerance in percent units; 0.025 corresponds to [90,110] kHz when target=0.25%")
     ap.add_argument("--alpha", type=float, default=0.3) #alpha ttbar focus
-    ap.add_argument("--beta", type=float, default=0.2, help="beta moving penalty weight") 
+    ap.add_argument("--lambda_1", type=float, default=0.5, help="main reward weight for bg rate tracking") #ablation study for reward: bg rate tracking
+    ap.add_argument("--lambda_3", type=float, default=0.2, help="beta moving penalty weight")  #ablation_study for reward: moving penality
     ap.add_argument("--violation-penalty", type=float, default=1.0,
                     help="penalty weight for bg rate outside of target±tol band")
 
@@ -4340,11 +4368,11 @@ def main():
         tol=tol,
         mode="lex",        # "lex" default; "lag" if adaptive lambda
         mix=args.alpha, #increase for tt
-        beta_move=args.beta,
+        beta_move=args.lambda_3,
         gamma_stab=0.25,
         k_violate=args.violation_penalty,
         w_occ=float(args.occ_pen)
-    ))
+    ), beta = args.lambda_3, alpha = args.alpha, lambda_1 = args.lambda_1)
     gfpo_cfg_as = GRPOConfig(
         lr=args.grpo_lr,
         beta_kl=args.beta_kl,
@@ -4360,11 +4388,11 @@ def main():
         tol=tol,
         mode="lex",        # "lex" default; "lag" if adaptive lambda
         mix=args.alpha, #increase for tt
-        beta_move=args.beta,
+        beta_move=args.lambda_3,
         gamma_stab=0.25,
         k_violate=args.violation_penalty,
         w_occ=float(args.occ_pen)
-    ))
+    ), beta = args.lambda_3, alpha = args.alpha, lambda_1 = args.lambda_1)
 
     # ---------------- GFPO variants (AS) ----------------
     gfpo_as_agents = {}
@@ -4386,7 +4414,7 @@ def main():
         target_update=int(args.dqn_target_update),
     )
     dqn_as = SeqDQNAgent(seq_len=K, feat_dim=feat_dim_as, n_actions=len(AS_DELTAS),
-                        cfg=dqn_cfg, seed=SEED)
+                        cfg=dqn_cfg, seed=SEED, lambda_1=args.lambda_1)
     
 
     controllers_as = []
@@ -4405,11 +4433,11 @@ def main():
         target=target, tol=tol,
         eps_min=args.dqn_eps_min, eps_decay=args.dqn_eps_decay,
         train_steps_per_micro=args.dqn_train_steps_per_micro,
-        alpha=args.alpha, beta=args.beta
+        alpha=args.alpha, beta=args.lambda_3, lambda_1 = args.lambda_1
         ))
     
     if "dqn_f" in BASELINES:
-        agent_dqnf_ad = SeqDQNAgent(seq_len=K, feat_dim=feat_dim_as, n_actions=len(AS_DELTAS), cfg=dqn_cfg, seed=SEED+7)
+        agent_dqnf_ad = SeqDQNAgent(seq_len=K, feat_dim=feat_dim_as, n_actions=len(AS_DELTAS), cfg=dqn_cfg, seed=SEED, lambda_1 = args.lambda_1)
 
         controllers_as.append(DQNFrozenCtrl(
         "DQN-F", fixed_AS_cut, as_lo, as_hi,
@@ -4418,7 +4446,7 @@ def main():
         target=target, tol=tol,
         eps_min=args.dqn_f_eps, eps_decay=1.0,  # no decay
         train_steps_per_micro=0,               # no training during rollout
-        alpha=args.alpha, beta=args.beta, train_chunks=args.dqn_f_train_chunks, eps_after_freeze=args.dqn_f_eps
+        alpha=args.alpha, beta=args.lambda_3, train_chunks=args.dqn_f_train_chunks, eps_after_freeze=args.dqn_f_eps
         ))
 
     
@@ -4432,7 +4460,7 @@ def main():
         )
         agent_adt_as = SeqDQNAgent(
         seq_len=K, feat_dim=feat_dim_as, n_actions=len(AS_DELTAS),
-        cfg=adt_cfg_as, seed=SEED + 101
+        cfg=adt_cfg_as, seed=SEED + 101, lambda_1 = args.lambda_1
         )
 
         controllers_as.append(ADTCtrl(
@@ -4445,11 +4473,11 @@ def main():
         target=target, tol=tol,
         eps_min=args.dqn_eps_min, eps_decay=args.dqn_eps_decay,
         train_steps_per_micro=0,               # ignored by ADT (no per-micro train)
-        alpha=args.alpha, beta=args.beta,      # used for reward_mode="lhc"
+        alpha=args.alpha, beta=args.lambda_3,      # used for reward_mode="lhc"
         adt_l=args.adt_l,
         train_steps_per_episode=args.adt_train_steps_per_episode,
         reward_mode=args.adt_reward_mode,
-        adt_alpha=args.adt_alpha, adt_beta=args.adt_beta,
+        adt_alpha=args.alpha, adt_beta=args.lambda_3, lambda_1 = args.lambda_1
         ))
 
     if "grpo" in BASELINES:
@@ -4459,7 +4487,7 @@ def main():
         as_mid=as_mid, as_span=as_span, near_widths=near_widths_as, K=K,
         target=target, tol=tol,
         train_every=args.train_every, temperature=args.as_temperature,
-        group_size_keep=args.group_size_keep, signal_multiplier=args.signal_multiplier_as
+        group_size_keep=args.group_size_keep, signal_multiplier=args.signal_multiplier_as, beta = args.lambda_3, lambda_1 = args.lambda_1, alpha = args.alpha
         ))
 
 
@@ -4467,7 +4495,7 @@ def main():
         controllers_as.append(GFPOCtrl(
         "GFPO-F", fixed_AS_cut, as_lo, as_hi,
         agent=GRPOAgent(seq_len=K, feat_dim=feat_dim_as, n_actions=len(AS_DELTAS), cfg=cfg, seed=SEED,
-                        reward_cfg=agent.reward_cfg),
+                        reward_cfg=agent.reward_cfg, beta = args.lambda_3, alpha = args.alpha, lambda_1 = args.lambda_1),
         deltas=AS_DELTAS, step=AS_STEP, max_delta=MAX_DELTA_AS,
         as_mid=as_mid, as_span=as_span, near_widths=near_widths_as, K=K,
         target=target, tol=tol,
@@ -4475,14 +4503,14 @@ def main():
         gfpo_filter="abs_err_topk",
         group_size_sample=args.group_size_sample, group_size_keep=args.group_size_keep,
         feas_mult=args.gfpo_feas_mult, mix=args.gfpo_mix_as,
-        band_mult=args.band_mult_as, sig_bonus=args.sig_bonus_as, signal_multiplier=args.signal_multiplier_as
+        band_mult=args.band_mult_as, sig_bonus=args.sig_bonus_as, signal_multiplier=args.signal_multiplier_as, beta = args.lambda_3, alpha = args.alpha, lambda_1 = args.lambda_1
         ))
 
     if "gfpo_fr" in BASELINES:
         controllers_as.append(GFPOCtrl(
         "GFPO-FR", fixed_AS_cut, as_lo, as_hi,
         agent=GRPOAgent(seq_len=K, feat_dim=feat_dim_as, n_actions=len(AS_DELTAS), cfg=cfg, seed=SEED,
-                        reward_cfg=agent.reward_cfg),
+                        reward_cfg=agent.reward_cfg, beta = args.lambda_3, lambda_1 = args.lambda_1, alpha = args.alpha),
         deltas=AS_DELTAS, step=AS_STEP, max_delta=MAX_DELTA_AS,
         as_mid=as_mid, as_span=as_span, near_widths=near_widths_as, K=K,
         target=target, tol=tol,
@@ -4490,7 +4518,7 @@ def main():
         gfpo_filter="feasible_first_sig",
         group_size_sample=args.group_size_sample, group_size_keep=args.group_size_keep,
         feas_mult=args.gfpo_feas_mult, mix=args.gfpo_mix_as,
-        band_mult=args.band_mult_as, sig_bonus=args.sig_bonus_as, signal_multiplier=args.signal_multiplier_as
+        band_mult=args.band_mult_as, sig_bonus=args.sig_bonus_as, signal_multiplier=args.signal_multiplier_as, beta = args.lambda_3, alpha = args.alpha, lambda_1 = args.lambda_1
         ))
 
     if "ppo" in BASELINES:
@@ -4519,8 +4547,9 @@ def main():
                 target=target,
                 tol=tol,
                 alpha=args.alpha,
-                beta=args.beta,
+                beta=args.lambda_3,
                 ppo_temperature=args.as_temperature,
+                lambda_1 = args.lambda_1
         )
         )
 
@@ -4573,7 +4602,7 @@ def main():
         )
         dqn_ht = SeqDQNAgent(
             seq_len=K, feat_dim=feat_dim_ht, n_actions=len(HT_DELTAS),
-            cfg=dqn_ht_cfg, seed=SEED
+            cfg=dqn_ht_cfg, seed=SEED, lambda_1 = args.lambda_1
         )
         
         if "constant" in BASELINES:
@@ -4590,10 +4619,10 @@ def main():
             target=target, tol=tol,
             eps_min=args.dqn_eps_min, eps_decay=args.dqn_eps_decay,
             train_steps_per_micro=args.dqn_train_steps_per_micro,
-            alpha=args.alpha, beta=args.beta
+            alpha=args.alpha, beta=args.lambda_3, lambda_1 = args.lambda_1
             ))
         if "dqn_f" in BASELINES:
-            agent_dqnf_ht = SeqDQNAgent(seq_len=K, feat_dim=feat_dim_ht, n_actions=len(HT_DELTAS), cfg=dqn_ht_cfg, seed=SEED+11)
+            agent_dqnf_ht = SeqDQNAgent(seq_len=K, feat_dim=feat_dim_ht, n_actions=len(HT_DELTAS), cfg=dqn_ht_cfg, seed=SEED+11, lambda_1 = args.lambda_1)
 
             controllers_ht.append(DQNFrozenCtrlHT(
             "DQN-F", fixed_Ht_cut, ht_lo, ht_hi,
@@ -4602,7 +4631,7 @@ def main():
             target=target, tol=tol,
             eps_min=args.dqn_f_eps, eps_decay=1.0,  # no decay
             train_steps_per_micro=0,               # no training during rollout
-            alpha=args.alpha, beta=args.beta, train_chunks=args.dqn_f_train_chunks, eps_after_freeze=args.dqn_f_eps
+            alpha=args.alpha, train_chunks=args.dqn_f_train_chunks, eps_after_freeze=args.dqn_f_eps, beta = args.lambda_3, lambda_1 = args.lambda_1
             ))
         
         # --- ADT baseline (HT) ---
@@ -4615,7 +4644,7 @@ def main():
             )
             agent_adt_ht = SeqDQNAgent(
                 seq_len=K, feat_dim=feat_dim_ht, n_actions=len(HT_DELTAS),
-                cfg=adt_cfg_ht, seed=SEED + 202
+                cfg=adt_cfg_ht, seed=SEED + 202, lambda_1 = args.lambda_1
             )
 
             controllers_ht.append(ADTCtrlHT(
@@ -4628,11 +4657,11 @@ def main():
             target=target, tol=tol,
             eps_min=args.dqn_eps_min, eps_decay=args.dqn_eps_decay,
             train_steps_per_micro=0,              # ignored by ADT
-            alpha=args.alpha, beta=args.beta,
+            alpha=args.alpha, beta=args.lambda_3,
             adt_l=args.adt_l,
             train_steps_per_episode=args.adt_train_steps_per_episode,
             reward_mode=args.adt_reward_mode,
-            adt_alpha=args.adt_alpha, adt_beta=args.adt_beta,
+            adt_alpha=args.alpha, adt_beta=args.lambda_3, lambda_1 = args.lambda_1
             ))
         
         if "grpo" in BASELINES:
@@ -4642,13 +4671,13 @@ def main():
             )
             agent_ht = GRPOAgent(
                 seq_len=K, feat_dim=feat_dim_ht, n_actions=len(HT_DELTAS),
-                cfg=cfg_ht, seed=SEED,
+                cfg=cfg_ht, seed=SEED, beta = args.lambda_3, alpha = args.alpha, lambda_1 = args.lambda_1,
                 reward_cfg=GRPORewardCfg(
                 target=target,
                 tol=tol,
                 mode="lex",        # "lex" recommended
                 mix=args.alpha, #increase for tt
-                beta_move=args.beta,
+                beta_move=args.lambda_3,
                 gamma_stab=0.25,
                 k_violate=args.violation_penalty,
                 w_occ=float(args.occ_pen)
@@ -4660,7 +4689,7 @@ def main():
             ht_mid=ht_mid, ht_span=ht_span, near_widths=near_widths_ht, K=K,
             target=target, tol=tol,
             train_every=args.train_every, temperature=args.ht_temperature,
-            group_size_keep=args.group_size_keep, signal_multiplier=args.signal_multiplier_ht
+            group_size_keep=args.group_size_keep, signal_multiplier=args.signal_multiplier_ht, beta = args.lambda_3, lambda_1 = args.lambda_1, alpha = args.alpha
             ))
 
 
@@ -4668,7 +4697,7 @@ def main():
             controllers_ht.append(GFPOCtrlHT(
             "GFPO-F", fixed_Ht_cut, ht_lo, ht_hi,
             agent=GRPOAgent(seq_len=K, feat_dim=feat_dim_ht, n_actions=len(HT_DELTAS), cfg=cfg, seed=SEED,
-                        reward_cfg=agent.reward_cfg),
+                        reward_cfg=agent.reward_cfg, beta = args.lambda_3, alpha = args.alpha, lambda_1 = args.lambda_1),
                 deltas=HT_DELTAS, step=HT_STEP, max_delta=MAX_DELTA_HT,
                 ht_mid=ht_mid, ht_span=ht_span, near_widths=near_widths_ht, K=K,
                 target=target, tol=tol,
@@ -4677,13 +4706,13 @@ def main():
                 group_size_sample=args.group_size_sample, group_size_keep=args.group_size_keep,
                 feas_mult=args.gfpo_feas_mult, mix=args.gfpo_mix_ht,
                 band_mult=args.band_mult_ht, sig_bonus=args.sig_bonus, signal_multiplier=args.signal_multiplier_ht
-                ))
+                , beta = args.lambda_3, alpha = args.alpha, lambda_1 = args.lambda_1))
 
         if "gfpo_fr" in BASELINES:
             controllers_ht.append(GFPOCtrlHT(
             "GFPO-FR", fixed_Ht_cut, ht_lo, ht_hi,
             agent=GRPOAgent(seq_len=K, feat_dim=feat_dim_ht, n_actions=len(HT_DELTAS), cfg=cfg, seed=SEED,
-                        reward_cfg=agent.reward_cfg),
+                        reward_cfg=agent.reward_cfg, beta = args.lambda_3, alpha = args.alpha, lambda_1 = args.lambda_1),
                 deltas=HT_DELTAS, step=HT_STEP, max_delta=MAX_DELTA_HT,
                 ht_mid=ht_mid, ht_span=ht_span, near_widths=near_widths_ht, K=K,
                 target=target, tol=tol,
@@ -4691,7 +4720,7 @@ def main():
                 gfpo_filter="feasible_first_sig",
                 group_size_sample=args.group_size_sample, group_size_keep=args.group_size_keep,
                 feas_mult=args.gfpo_feas_mult, mix=args.gfpo_mix_ht,
-                band_mult=args.band_mult_ht, sig_bonus=args.sig_bonus, signal_multiplier=args.signal_multiplier_ht
+                band_mult=args.band_mult_ht, sig_bonus=args.sig_bonus, signal_multiplier=args.signal_multiplier_ht, beta = args.lambda_3, alpha = args.alpha, lambda_1 = args.lambda_1
             ))
     
         
@@ -4712,7 +4741,7 @@ def main():
                 ht_mid=ht_mid, ht_span=ht_span,
                 near_widths=near_widths_ht, K=K,
                 target=target, tol=tol,
-                alpha=args.alpha, beta=args.beta, ppo_temperature=args.ht_temperature
+                alpha=args.alpha, beta=args.lambda_3, ppo_temperature=args.ht_temperature, lambda_1 = args.lambda_1
             ))
 
         
@@ -4740,16 +4769,16 @@ def main():
 
         gfpo_ht = GRPOAgent(
                 seq_len=K, feat_dim=feat_dim_ht, n_actions=len(HT_DELTAS),
-                cfg=gfpo_cfg_ht, seed=SEED,
+                cfg=gfpo_cfg_ht, seed=SEED, beta = args.lambda_3, alpha = args.alpha, lambda_1 = args.lambda_1,
                 reward_cfg=GRPORewardCfg(
                 target=target,
                 tol=tol,
                 mode="lex",        # "lex" recommended
                 mix=args.alpha, #increase for tt
-                beta_move=args.beta,
+                beta_move=args.lambda_3,
                 gamma_stab=0.25,
                 k_violate=args.violation_penalty,
-                w_occ=float(args.occ_pen)
+                w_occ=float(args.occ_pen),
             )
         )
 
@@ -4952,12 +4981,12 @@ def main():
 
     
         # --- end-of-chunk hooks (ADT trains here) ---
-        for ctrl in controllers_as:
-            ctrl.end_chunk(chunk=t)
+        # for ctrl in controllers_as:
+        #     ctrl.end_chunk(chunk=t)
 
-        if args.run_ht:
-            for ctrl in controllers_ht:
-                ctrl.end_chunk(chunk=t)
+        # if args.run_ht:
+        #     for ctrl in controllers_ht:
+        #         ctrl.end_chunk(chunk=t)
         # ============================
         # CHUNK-LEVEL logging (ONCE per chunk)
         # ============================
@@ -4969,6 +4998,7 @@ def main():
             bg = float(Sing_Trigger(bas, cut))
             tt = float(Sing_Trigger(sas_tt, cut))
             aa = float(Sing_Trigger(sas_aa, cut))
+            print(f"t{t} name {ctrl.name} tt {tt} aa {aa}")
             occ = float(near_occupancy(bas, cut, near_widths_as)[1])
 
             cm = confusion_counts_at_cut_split(bas_j, sas_tt, sas_aa, cut)
