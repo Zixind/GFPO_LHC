@@ -1,6 +1,10 @@
 #!/usr/bin/env python3
 """
-demo_single_trigger_grpo_as_feature_all.py
+demo_single_trigger_grpo_as_feature_all_rollout.py
+
+Rollout/deployment script: loads pre-trained RL policies and runs on real CMS data.
+Based on demo_single_trigger_grpo_as_feature_all.py with model loading added.
+Policies continue online adaptation on real data (fresh optimizer, no frozen weights).
 
 Single-trigger threshold control with event-sequence features with sliding window.
 
@@ -48,6 +52,94 @@ from pathlib import Path
 _PROJECT_ROOT = str(Path(__file__).resolve().parent.parent)
 if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
+
+# ----------------------------- model loading infrastructure -----------------------------
+import torch
+import torch.nn as nn
+import torch.optim as optim_module
+from typing import Any, Dict, Tuple, Iterable, Optional
+
+
+def _iter_children(obj: Any) -> Iterable[Tuple[Any, Any]]:
+    if obj is None:
+        return
+    if isinstance(obj, dict):
+        for k, v in obj.items():
+            yield k, v
+        return
+    if isinstance(obj, (list, tuple)):
+        for i, v in enumerate(obj):
+            yield i, v
+        return
+    if hasattr(obj, "__dict__"):
+        for k, v in vars(obj).items():
+            yield k, v
+        return
+
+
+def _path_to_str(path: Tuple[Any, ...]) -> str:
+    out = []
+    for p in path:
+        if isinstance(p, int):
+            out.append(f"[{p}]")
+        else:
+            if out and not out[-1].endswith("]"):
+                out.append(".")
+            out.append(str(p))
+    return "".join(out) if out else "<root>"
+
+
+def _collect_named_objects(agent: Any):
+    """Return dicts: path_str -> module_obj / optimizer_obj (NOT state_dicts)."""
+    seen = set()
+    modules: Dict[str, nn.Module] = {}
+    optimizers: Dict[str, optim_module.Optimizer] = {}
+
+    def rec(obj: Any, path: Tuple[Any, ...]):
+        oid = id(obj)
+        if oid in seen:
+            return
+        seen.add(oid)
+        if isinstance(obj, nn.Module):
+            modules[_path_to_str(path)] = obj
+        elif isinstance(obj, optim_module.Optimizer):
+            optimizers[_path_to_str(path)] = obj
+        for k, v in _iter_children(obj) or []:
+            rec(v, path + (k,))
+
+    rec(agent, tuple())
+    return modules, optimizers
+
+
+def load_agent_bundle_into(agent: Any, ckpt_pt: Path, *, load_optim: bool = False, strict: bool = True):
+    """Load state_dicts from a .pt bundle into a pre-instantiated agent."""
+    ckpt_pt = Path(ckpt_pt)
+    bundle = torch.load(str(ckpt_pt), map_location="cpu")
+    state = bundle.get("state", {})
+    sd_modules = state.get("modules", {})
+    sd_opts = state.get("optimizers", {})
+
+    cur_modules, cur_opts = _collect_named_objects(agent)
+
+    missing, unexpected = [], []
+    for k, sd in sd_modules.items():
+        if k not in cur_modules:
+            unexpected.append(k)
+            continue
+        cur_modules[k].load_state_dict(sd, strict=strict)
+
+    for k in cur_modules.keys():
+        if k not in sd_modules:
+            missing.append(k)
+
+    if load_optim:
+        for k, sd in sd_opts.items():
+            if k in cur_opts:
+                cur_opts[k].load_state_dict(sd)
+
+    meta = bundle.get("meta", {})
+    return {"meta": meta, "missing_keys": missing, "unexpected_keys": unexpected}
+# ----------------------------- end model loading infrastructure -----------------------------
 
 import matplotlib.pyplot as plt
 from controllers import PD_controller1, PD_controller2
@@ -3344,10 +3436,10 @@ def gfpo_topk_keep_indices(bg_after, tt_after, aa_after, rewards, *,
 def main():
     ap = argparse.ArgumentParser()
 
-    ap.add_argument("--input", default="Data/Trigger_food_MC.h5",
+    ap.add_argument("--input", default="Data/Matched_data_2016_dim2.h5",
                     choices=["Data/Trigger_food_MC.h5", "Data/Matched_data_2016_dim2.h5", "Data/Trigger_food_MC_ablation_4.h5", "Data/Trigger_food_MC_ablation_6.h5", "Data/Trigger_food_MC_ablation_8.h5", "Data/Trigger_food_MC_ablation_10.h5", "Data/Trigger_food_MC_ablation_12.h5", "Data/Trigger_food_MC_ablation_14.h5", "Data/Trigger_food_MC_ablation_16.h5"])
-    ap.add_argument("--outdir", default="outputs/demo_sing_grpo_as_feature")
-    ap.add_argument("--control", default="MC", choices=["MC", "RealData"])
+    ap.add_argument("--outdir", default="outputs/demo_sing_grpo_as_feature_rollout")
+    ap.add_argument("--control", default="RealData", choices=["MC", "RealData"])
     ap.add_argument("--score-dim-hint", type=int, default=2)
     ap.add_argument("--as-dim", type=int, default=2, choices=[1, 2, 4, 6, 8, 10, 12, 14, 16])
 
@@ -3471,11 +3563,12 @@ def main():
     ap.add_argument("--ppo-temperature", type=float, default=1.0,
                     help="sampling temperature for PPO policy during data collection")
 
-    ap.add_argument("--max-chunks", type=int, default=None,
-                    help="Use only first N chunks (e.g. 148 for 80%% train split)")
+    # --- Model loading args ---
+    ap.add_argument("--models-dir", type=str,
+                    default="outputs/demo_sing_grpo_as_feature_all_MC/models_mc",
+                    help="Directory containing saved .pt model bundles from training")
     ap.add_argument("--skip-chunks", type=int, default=0,
                     help="Skip first N chunks (e.g. 148 to validate on last 20%%)")
-
     global chunk_rows
     chunk_rows = []
 
@@ -3485,17 +3578,15 @@ def main():
     import wandb
 
     wandb.init(
-        project="trigger-rl",   # choose your project name
-        config=vars(args)       # log ALL argparse parameters automatically
+        project="trigger-rl-rollout",
+        config=vars(args)
     )
-
-    # Define key sweep metrics so they appear as columns in the wandb sweep table
     for trig in ["AD", "HT"]:
         for meth in PLOT_METHODS:
             for key in ["InBand", "tt_overall", "aa_overall", "tt_inband", "aa_inband", "MAE"]:
                 wandb.define_metric(f"{trig}_{meth}_{key}", summary="max" if key != "MAE" else "min")
 
-    cfg = wandb.config
+    cfg = argparse.Namespace(**vars(args))  # use args directly instead of wandb.config
 
     target = float(args.target)
     tol    = float(args.tol)
@@ -4148,9 +4239,6 @@ def main():
     if args.skip_chunks > 0:
         batch_starts = batch_starts[args.skip_chunks:]
         print(f"[val split] Skipped first {args.skip_chunks} chunks, using {len(batch_starts)} remaining")
-    if args.max_chunks is not None:
-        batch_starts = batch_starts[:args.max_chunks]
-        print(f"[train split] Using first {len(batch_starts)} chunks (--max-chunks {args.max_chunks})")
     micro_counter = 0
     grpo_samples = []   # one table, add column "trigger" = {"AS","HT"}
 
@@ -4169,6 +4257,28 @@ def main():
         ht_hists = []
         ht_stats = []
     
+
+    # ======================== Load pre-trained models ========================
+    _models_dir = Path(args.models_dir)
+    print(f"\nLoading pre-trained models from {_models_dir} ...")
+    for ctrl in controllers_as:
+        if hasattr(ctrl, 'agent') and ctrl.agent is not None:
+            ckpt = _models_dir / "AD" / f"{ctrl.name}.pt"
+            if ckpt.exists():
+                info = load_agent_bundle_into(ctrl.agent, ckpt, load_optim=False)
+                print(f"  Loaded AD/{ctrl.name}: missing={info['missing_keys']}, unexpected={info['unexpected_keys']}")
+            else:
+                print(f"  WARNING: No checkpoint found at {ckpt}, using random init for AD/{ctrl.name}")
+    if args.run_ht:
+        for ctrl in controllers_ht:
+            if hasattr(ctrl, 'agent') and ctrl.agent is not None:
+                ckpt = _models_dir / "HT" / f"{ctrl.name}.pt"
+                if ckpt.exists():
+                    info = load_agent_bundle_into(ctrl.agent, ckpt, load_optim=False)
+                    print(f"  Loaded HT/{ctrl.name}: missing={info['missing_keys']}, unexpected={info['unexpected_keys']}")
+                else:
+                    print(f"  WARNING: No checkpoint found at {ckpt}, using random init for HT/{ctrl.name}")
+    print("Model loading complete.\n")
 
     for t, I in enumerate(batch_starts):
         end = min(I + chunk_size, N, len(Bnpv))
@@ -4692,11 +4802,8 @@ def main():
 
     if summary_log:
         wandb.log(summary_log)
-
-    # Also store in wandb.summary for sweep table display
     for k, v in summary_log.items():
         wandb.summary[k] = v
-
     wandb.finish()
 
 

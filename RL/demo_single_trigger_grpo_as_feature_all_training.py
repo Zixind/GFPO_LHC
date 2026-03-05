@@ -1,6 +1,9 @@
 #!/usr/bin/env python3
 """
-demo_single_trigger_grpo_as_feature_all.py
+demo_single_trigger_grpo_as_feature_all_training.py
+
+Training script: trains RL policies on MC data and saves them for deployment.
+Based on demo_single_trigger_grpo_as_feature_all.py with model saving added.
 
 Single-trigger threshold control with event-sequence features with sliding window.
 
@@ -48,6 +51,101 @@ from pathlib import Path
 _PROJECT_ROOT = str(Path(__file__).resolve().parent.parent)
 if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
+
+# ----------------------------- model saving infrastructure -----------------------------
+import json
+import time
+import torch
+import torch.nn as nn
+import torch.optim as optim_module
+from typing import Any, Dict, Tuple, Iterable, Optional
+
+
+def _iter_children(obj: Any) -> Iterable[Tuple[Any, Any]]:
+    """Yield (key, child) for recursion over dict/list/tuple/obj.__dict__."""
+    if obj is None:
+        return
+    if isinstance(obj, dict):
+        for k, v in obj.items():
+            yield k, v
+        return
+    if isinstance(obj, (list, tuple)):
+        for i, v in enumerate(obj):
+            yield i, v
+        return
+    if hasattr(obj, "__dict__"):
+        for k, v in vars(obj).items():
+            yield k, v
+        return
+
+
+def _path_to_str(path: Tuple[Any, ...]) -> str:
+    out = []
+    for p in path:
+        if isinstance(p, int):
+            out.append(f"[{p}]")
+        else:
+            if out and not out[-1].endswith("]"):
+                out.append(".")
+            out.append(str(p))
+    return "".join(out) if out else "<root>"
+
+
+def _collect_state(agent: Any) -> Dict[str, Dict[str, Any]]:
+    """Recursively collect all nn.Module and Optimizer state_dicts inside `agent`."""
+    seen = set()
+    modules: Dict[str, Dict[str, Any]] = {}
+    optimizers: Dict[str, Dict[str, Any]] = {}
+
+    def rec(obj: Any, path: Tuple[Any, ...]):
+        oid = id(obj)
+        if oid in seen:
+            return
+        seen.add(oid)
+        if isinstance(obj, nn.Module):
+            modules[_path_to_str(path)] = obj.state_dict()
+        elif isinstance(obj, optim_module.Optimizer):
+            optimizers[_path_to_str(path)] = obj.state_dict()
+        for k, v in _iter_children(obj) or []:
+            rec(v, path + (k,))
+
+    rec(agent, tuple())
+    return {"modules": modules, "optimizers": optimizers}
+
+
+def save_agent_mc(agent: Any, out_pt: Path, *, meta: Optional[dict] = None):
+    """Save a single agent/controller object to a .pt bundle."""
+    out_pt = Path(out_pt)
+    out_pt.parent.mkdir(parents=True, exist_ok=True)
+    state = _collect_state(agent)
+    bundle = {
+        "__format_version__": 1,
+        "__class__": agent.__class__.__name__,
+        "state": state,
+        "meta": meta or {},
+    }
+    torch.save(bundle, str(out_pt))
+    meta_path = out_pt.with_suffix(".meta.json")
+    with open(meta_path, "w") as f:
+        json.dump(meta or {}, f, indent=2, default=str, sort_keys=True)
+
+
+def save_registry_mc(registry: dict, out_dir: Path, *, meta_common: Optional[dict] = None):
+    """Save all agents in the registry to {out_dir}/{trigger}/{method}.pt."""
+    out_dir = Path(out_dir)
+    stamp = time.strftime("%Y%m%d_%H%M%S")
+    meta_common = dict(meta_common or {})
+    meta_common.setdefault("saved_at", stamp)
+    meta_common.setdefault("trained_on", "MC")
+    for trigger, by_method in (registry or {}).items():
+        for method, agent in (by_method or {}).items():
+            if agent is None:
+                continue
+            out_pt = out_dir / str(trigger) / f"{method}.pt"
+            meta = dict(meta_common, trigger=str(trigger), method=str(method))
+            save_agent_mc(agent, out_pt, meta=meta)
+            print(f"  Saved {out_pt}")
+# ----------------------------- end model saving infrastructure -----------------------------
 
 import matplotlib.pyplot as plt
 from controllers import PD_controller1, PD_controller2
@@ -3471,10 +3569,13 @@ def main():
     ap.add_argument("--ppo-temperature", type=float, default=1.0,
                     help="sampling temperature for PPO policy during data collection")
 
+    # --- Model saving args ---
+    ap.add_argument("--save-models", action="store_true",
+                    help="Save trained agents to models_mc/ after training")
+    ap.add_argument("--models-dir", type=str, default=None,
+                    help="Override model save directory (default: {outdir}/models_mc)")
     ap.add_argument("--max-chunks", type=int, default=None,
                     help="Use only first N chunks (e.g. 148 for 80%% train split)")
-    ap.add_argument("--skip-chunks", type=int, default=0,
-                    help="Skip first N chunks (e.g. 148 to validate on last 20%%)")
 
     global chunk_rows
     chunk_rows = []
@@ -4145,9 +4246,6 @@ def main():
     Occ_const_ht, Occ_pd_ht, Occ_dqn_ht, Occ_grpo_ht = [], [], [], []  # if --run-ht      
 
     batch_starts = list(range(start_event, N, chunk_size))
-    if args.skip_chunks > 0:
-        batch_starts = batch_starts[args.skip_chunks:]
-        print(f"[val split] Skipped first {args.skip_chunks} chunks, using {len(batch_starts)} remaining")
     if args.max_chunks is not None:
         batch_starts = batch_starts[:args.max_chunks]
         print(f"[train split] Using first {len(batch_starts)} chunks (--max-chunks {args.max_chunks})")
@@ -4169,6 +4267,17 @@ def main():
         ht_hists = []
         ht_stats = []
     
+
+    # ---- Build AGENT_REGISTRY for model saving ----
+    AGENT_REGISTRY = {"AD": {}}
+    for ctrl in controllers_as:
+        if hasattr(ctrl, 'agent') and ctrl.agent is not None:
+            AGENT_REGISTRY["AD"][ctrl.name] = ctrl.agent
+    if args.run_ht:
+        AGENT_REGISTRY["HT"] = {}
+        for ctrl in controllers_ht:
+            if hasattr(ctrl, 'agent') and ctrl.agent is not None:
+                AGENT_REGISTRY["HT"][ctrl.name] = ctrl.agent
 
     for t, I in enumerate(batch_starts):
         end = min(I + chunk_size, N, len(Bnpv))
@@ -4696,6 +4805,27 @@ def main():
     # Also store in wandb.summary for sweep table display
     for k, v in summary_log.items():
         wandb.summary[k] = v
+
+    # ======================== Save trained models ========================
+    if args.save_models:
+        models_dir = Path(args.models_dir) if args.models_dir else Path(args.outdir) / "models_mc"
+        print(f"\nSaving trained agents to {models_dir} ...")
+        save_registry_mc(
+            AGENT_REGISTRY,
+            out_dir=models_dir,
+            meta_common={
+                "seed": SEED,
+                "run_label": run_label,
+                "as_dim": args.as_dim,
+                "target": args.target,
+                "tol": args.tol,
+                "mc_file": args.input,
+                "alpha": args.alpha,
+                "lambda_1": args.lambda_1,
+                "lambda_3": args.lambda_3,
+            },
+        )
+        print("Model saving complete.")
 
     wandb.finish()
 
