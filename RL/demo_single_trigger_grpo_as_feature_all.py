@@ -38,14 +38,21 @@ Notes:
 import argparse
 import random
 import csv
+import sys
 import numpy as np
 from collections import deque, defaultdict
 from dataclasses import dataclass
 from pathlib import Path
+
+# Ensure project root is on sys.path (needed when invoked by wandb sweep agent)
+_PROJECT_ROOT = str(Path(__file__).resolve().parent.parent)
+if _PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, _PROJECT_ROOT)
+
 import matplotlib.pyplot as plt
 from controllers import PD_controller1, PD_controller2
 from triggers import Sing_Trigger
-from RL.utils import add_cms_header, save_png, print_h5_tree, read_any_h5, cummean, rel_to_t0, near_occupancy, style_diag_axes, style_diag_legend, finalize_diag_fig, apply_paper_style, plot_inband_eff_single_signal_ad_vs_ht, inband_eff_by_method, d_bg_d_cut_norm, _make_edges, _score_chunk_stats, small_legend, plot_inband_eff_grouped_by_trigger, plot_entropy_timeseries, plot_early_abs_err_hist, select_plot_methods, ecdf, select_plot_methods, plot_cdf_abs_err_multi, make_original_plots_for_trigger, _sig_score, collect_kept_candidate_arrays, _plot_score_density_heatmap, _plot_score_summary, _plot_adv_compare_ecdf, _plot_adv_hist_and_ecdf, _plot_two_hists, plot_feasibility_bar, plot_feasible_ratio_timeseries, plot_inband_eff_bars_multi, _plot_exec_tradeoff
+from RL.utils import add_cms_header, save_png, print_h5_tree, read_any_h5, cummean, rel_to_t0, near_occupancy, style_diag_axes, style_diag_legend, finalize_diag_fig, apply_paper_style, plot_inband_eff_single_signal_ad_vs_ht, inband_eff_by_method, d_bg_d_cut_norm, _make_edges, _score_chunk_stats, small_legend, plot_inband_eff_grouped_by_trigger, plot_entropy_timeseries, plot_early_abs_err_hist, select_plot_methods, ecdf, select_plot_methods, plot_cdf_abs_err_multi, make_original_plots_for_trigger, _sig_score, collect_kept_candidate_arrays, _plot_score_density_heatmap, _plot_score_summary, _plot_adv_compare_ecdf, _plot_adv_hist_and_ecdf, _plot_two_hists, plot_feasibility_bar, plot_feasible_ratio_timeseries, plot_inband_eff_bars_multi, _plot_exec_tradeoff, plot_rate_from_series
 from RL.grpo_agent import GRPOAgent, GRPOConfig, GRPORewardCfg #GRPO agent
 from RL.gfpo_agent import GFPOAgent, GFPOConfig
 from RL.dqn_agent import SeqDQNAgent, DQNConfig  # DQN agent
@@ -3478,7 +3485,13 @@ def main():
         config=vars(args)       # log ALL argparse parameters automatically
     )
 
-    cfg = wandb.config  
+    # Define key sweep metrics so they appear as columns in the wandb sweep table
+    for trig in ["AD", "HT"]:
+        for meth in PLOT_METHODS:
+            for key in ["InBand", "tt_overall", "aa_overall", "tt_inband", "aa_inband", "MAE"]:
+                wandb.define_metric(f"{trig}_{meth}_{key}", summary="max" if key != "MAE" else "min")
+
+    cfg = wandb.config
 
     target = float(args.target)
     tol    = float(args.tol)
@@ -3734,7 +3747,7 @@ def main():
         target=target, tol=tol,
         eps_min=args.dqn_f_eps, eps_decay=1.0,  # no decay
         train_steps_per_micro=0,               # no training during rollout
-        alpha=args.alpha, beta=args.lambda_3, train_chunks=args.dqn_f_train_chunks, eps_after_freeze=args.dqn_f_eps
+        alpha=args.alpha, beta=args.lambda_3, lambda_1=args.lambda_1, train_chunks=args.dqn_f_train_chunks, eps_after_freeze=args.dqn_f_eps
         ))
 
     
@@ -4301,6 +4314,25 @@ def main():
                 tpr_tt=cm["tpr_tt"], precision_tt=cm["precision_tt"], f1_tt=cm["f1_tt"],
                 tpr_h4b=cm["tpr_h4b"], precision_h4b=cm["precision_h4b"], f1_h4b=cm["f1_h4b"],
             )
+            # --- wandb per-chunk logging (AD) ---
+            bg_khz = float(bg) * RATE_SCALE_KHZ
+            target_khz_w = float(target) * RATE_SCALE_KHZ
+            abs_err_khz = abs(bg_khz - target_khz_w)
+            inband_flag = int(abs(float(bg) - float(target)) <= float(tol))
+            prefix = f"AD/{ctrl.name}"
+            wandb.log({
+                f"{prefix}/bg_khz": bg_khz,
+                f"{prefix}/abs_err_khz": abs_err_khz,
+                f"{prefix}/inband": inband_flag,
+                f"{prefix}/cut": float(cut),
+                f"{prefix}/tt_sig_eff": float(tt),
+                f"{prefix}/aa_sig_eff": float(aa),
+                f"{prefix}/occ_mid": float(occ),
+                f"{prefix}/tpr": float(cm["tpr"]) if cm["tpr"] is not None else None,
+                f"{prefix}/fpr": float(cm["fpr"]) if cm["fpr"] is not None else None,
+                f"{prefix}/f1": float(cm["f1"]) if cm["f1"] is not None else None,
+                "chunk": t,
+            })
             ctrl.end_chunk(chunk=t, bas_j=bas) 
 
         # AD score distribution for this chunk
@@ -4330,6 +4362,25 @@ def main():
                     tp_h4b=cm["tp_h4b"], fn_h4b=cm["fn_h4b"], precision_h4b=cm["precision_h4b"],
                     f1_h4b=cm["f1_h4b"],
                 )
+                # --- wandb per-chunk logging (HT) ---
+                bg_khz = float(bg) * RATE_SCALE_KHZ
+                target_khz_w = float(target) * RATE_SCALE_KHZ
+                abs_err_khz = abs(bg_khz - target_khz_w)
+                inband_flag = int(abs(float(bg) - float(target)) <= float(tol))
+                prefix = f"HT/{ctrl.name}"
+                wandb.log({
+                    f"{prefix}/bg_khz": bg_khz,
+                    f"{prefix}/abs_err_khz": abs_err_khz,
+                    f"{prefix}/inband": inband_flag,
+                    f"{prefix}/cut": float(cut),
+                    f"{prefix}/tt_sig_eff": float(tt),
+                    f"{prefix}/aa_sig_eff": float(aa),
+                    f"{prefix}/occ_mid": float(occ),
+                    f"{prefix}/tpr": float(cm["tpr"]) if cm["tpr"] is not None else None,
+                    f"{prefix}/fpr": float(cm["fpr"]) if cm["fpr"] is not None else None,
+                    f"{prefix}/f1": float(cm["f1"]) if cm["f1"] is not None else None,
+                    "chunk": t,
+                })
                 ctrl.end_chunk(chunk=t, bht_j=bht)   # HT PID
 
 
@@ -4607,6 +4658,36 @@ def main():
                 )
     write_grpo_samples_csv(tables_dir / "grpo_samples.csv", grpo_samples)
 
+    # ======================== wandb: final summary metrics ========================
+    summary_log = {}
+    for row in paper_rows:
+        trig = row.get("Trigger", "?")
+        meth = row.get("Method", "?")
+        pfx = f"summary/{trig}/{meth}"
+        for key in ["MAE", "P95_abs_err", "InBand",
+                     "tt_inband", "aa_inband", "tt_overall", "aa_overall",
+                     "TPR", "FPR", "Precision", "F1"]:
+            val = row.get(key, None)
+            if val is not None and np.isfinite(float(val)):
+                summary_log[f"{pfx}/{key}"] = float(val)
+
+    # Flat top-level keys for sweep optimisation (AD + HT triggers, all methods)
+    for row in paper_rows:
+        trig = row.get("Trigger", "?")
+        meth = row.get("Method", "?")
+        for key in ["InBand", "tt_inband", "aa_inband", "tt_overall", "aa_overall", "MAE"]:
+            val = row.get(key, None)
+            if val is not None and np.isfinite(float(val)):
+                summary_log[f"{trig}_{meth}_{key}"] = float(val)
+
+    if summary_log:
+        wandb.log(summary_log)
+
+    # Also store in wandb.summary for sweep table display
+    for k, v in summary_log.items():
+        wandb.summary[k] = v
+
+    wandb.finish()
 
 
 if __name__ == "__main__":

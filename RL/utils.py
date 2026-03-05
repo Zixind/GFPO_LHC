@@ -1391,7 +1391,7 @@ def plot_cut_step_hist_multi(
     save_png(fig, str(outpath))
     plt.close(fig)
 
-def plot_rate_from_series(series_by_method, *, target, tol, title, outpath, run_label):
+def plot_rate_from_series(series_by_method, *, target, tol, title, outpath, run_label, RATE_SCALE_KHZ = 400.0):
     if not series_by_method:
         return
 
@@ -1496,6 +1496,7 @@ def make_original_plots_for_trigger(series, *, trigger_name, fixed_cut, target, 
         title=f"{trigger_name} Trigger",
         outpath=plots_dir / f"rate_{trigger_name.lower()}",
         run_label=run_label,
+        RATE_SCALE_KHZ=RATE_SCALE_KHZ
     )
     plot_cut_from_series(
         series,
