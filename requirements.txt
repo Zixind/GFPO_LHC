@@ -1,12 +1,16 @@
 numpy
+pandas
 matplotlib
+seaborn
 h5py
 hdf5plugin
 mplhep
-scikit-learn
-pytest
-torch
 atlas_mpl_style
+scikit-learn
+torch
+wandb
+pytest
+
 # TensorFlow:
 # - Apple Silicon (M1/M2/M3): use Apple's build + Metal plugin
 tensorflow-macos ; platform_system == "Darwin" and platform_machine == "arm64"

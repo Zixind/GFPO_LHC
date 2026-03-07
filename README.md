@@ -59,8 +59,26 @@ with h5py.File("Trigger_food_MC.h5", "r") as f:
     })
     print(df.head())
 ```
+## Required Packages
+
+| Package | Purpose |
+|---------|---------|
+| `numpy` | Numerical computing |
+| `pandas` | Data manipulation and analysis |
+| `matplotlib` | Data visualization |
+| `seaborn` | Statistical data visualization |
+| `h5py` | HDF5 file I/O for datasets |
+| `hdf5plugin` | HDF5 compression filters |
+| `mplhep` | HEP-style matplotlib plots |
+| `atlas_mpl_style` | ATLAS experiment plot styling |
+| `scikit-learn` | Machine learning utilities (preprocessing, metrics) |
+| `torch` (PyTorch) | Deep learning framework for RL agents |
+| `tensorflow` / `keras` | Deep learning framework for Autoencoder training |
+| `wandb` | Weights & Biases experiment tracking and hyperparameter sweeps |
+| `pytest` | Testing framework |
+
 ## Setup
-```
+```bash
 # clone
 git clone https://github.com/Shaghayegh-E/Adaptive-ParticlePhysics-Triggers.git
 cd Adaptive-ParticlePhysics-Triggers
@@ -185,7 +203,82 @@ python3 -m Control.realMultiTrigger --agent v3 \
     --outdir outputs/demo_RealMultiTrigger_realdata
 ```
 
-## Step 4 Generate Summary Plots
+## Step 4 RL-based Trigger Control (GFPO framework)
+
+### Single training run on MC
+```bash
+conda run -n AutoTrig python RL/demo_single_trigger_grpo_as_feature_all_training.py \
+  --run-ht --run-adt --save-models --max-chunks 148 \
+  --lambda_1 0.25 --lambda_3 0.75 \
+  --models-dir outputs/best_mc/models_mc \
+  --outdir outputs/best_mc
+```
+
+### Hyperparameter sweep (grid search over lambda_1, lambda_3)
+```bash
+wandb sweep sweep_lambda_train80.yaml
+wandb agent <SWEEP_ID>
+```
+
+### Validate on held-out 20% MC
+```bash
+conda run -n AutoTrig python RL/demo_single_trigger_grpo_as_feature_all_rollout.py \
+  --input Data/Trigger_food_MC.h5 --control MC \
+  --models-dir outputs/best_mc/models_mc \
+  --run-ht --run-adt --skip-chunks 148 \
+  --lambda_1 0.25 --lambda_3 0.75
+```
+
+### Rollout MC-trained models on full MC
+```bash
+conda run -n AutoTrig python RL/demo_single_trigger_grpo_as_feature_all_rollout.py \
+  --input Data/Trigger_food_MC.h5 --control MC \
+  --models-dir outputs/best_mc/models_mc \
+  --run-ht --run-adt \
+  --lambda_1 0.25 --lambda_3 0.75
+```
+
+### Rollout MC-trained models on CMS real data
+```bash
+conda run -n AutoTrig python RL/demo_single_trigger_grpo_as_feature_all_rollout.py \
+  --input Data/Matched_data_2016_dim2.h5 --control RealData \
+  --models-dir outputs/best_mc/models_mc \
+  --run-ht --run-adt \
+  --lambda_1 0.25 --lambda_3 0.75
+```
+
+### Train and rollout directly on CMS real data
+```bash
+# Train
+conda run -n AutoTrig python RL/demo_single_trigger_grpo_as_feature_all_training.py \
+  --input Data/Matched_data_2016_dim2.h5 --control RealData \
+  --run-ht --run-adt --save-models \
+  --lambda_1 0.25 --lambda_3 0.75 \
+  --models-dir outputs/best_real/models_real
+
+# Rollout
+conda run -n AutoTrig python RL/demo_single_trigger_grpo_as_feature_all_rollout.py \
+  --input Data/Matched_data_2016_dim2.h5 --control RealData \
+  --models-dir outputs/best_real/models_real \
+  --run-ht --run-adt \
+  --lambda_1 0.25 --lambda_3 0.75
+```
+
+### Key RL arguments
+
+| Argument | Description |
+|----------|-------------|
+| `--max-chunks N` | Use only first N chunks (148 = 80% train split) |
+| `--skip-chunks N` | Skip first N chunks (148 = 20% validation split) |
+| `--save-models` | Save trained model checkpoints |
+| `--models-dir PATH` | Load/save models from PATH |
+| `--run-ht` | Enable HT trigger alongside AD trigger |
+| `--run-adt` | Enable ADT baseline |
+| `--alpha` | tt-bar focus weight (default: 0.7) |
+| `--lambda_1` | Background rate tracking reward weight (default: 0.5) |
+| `--lambda_3` | Threshold movement penalty weight (default: 0.2) |
+
+## Step 5 Generate Summary Plots
 ### Summary of different agents’ Performance (default:MC)
 
 ```
