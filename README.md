@@ -205,78 +205,113 @@ python3 -m Control.realMultiTrigger --agent v3 \
 
 ## Step 4 RL-based Trigger Control (GFPO framework)
 
-### Single training run on MC
+The RL pipeline trains adaptive trigger policies on Monte Carlo (MC) simulation, validates on held-out MC data, and deploys on CMS real collision data. The MC dataset (`Trigger_food_MC.h5`) contains 185 chunks after the calibration window; we use an 80/20 temporal split (148 train / 37 validation) for hyperparameter tuning.
+
+### 4a. Hyperparameter sweep on 80% MC (optional)
+
+Grid search over reward weights $\lambda_1$ and $\lambda_3$. Each run trains on the first 148 chunks with `--max-chunks 148`.
+
 ```bash
-conda run -n AutoTrig python RL/demo_single_trigger_grpo_as_feature_all_training.py \
-  --run-ht --run-adt --save-models --max-chunks 148 \
+# Create the sweep (5x5 grid: lambda_1, lambda_3 in {0.0, 0.25, 0.5, 0.75, 1.0})
+wandb sweep sweep_lambda_train80.yaml
+
+# Launch the sweep agent (runs all 25 configurations sequentially)
+wandb agent <SWEEP_ID>
+```
+
+After the sweep, inspect the wandb dashboard to select the best $(\lambda_1, \lambda_3)$ based on validation signal efficiency and MAE.
+
+### 4b. Train on 80% MC
+
+Train RL agents (GFPO-F, GFPO-FR, GRPO, DQN, PPO, ADT) on the first 148 chunks and save model checkpoints.
+
+```bash
+python RL/demo_single_trigger_grpo_as_feature_all_training.py \
+  --run-ht --run-adt --save-models \
+  --max-chunks 148 \
   --lambda_1 0.25 --lambda_3 0.75 \
   --models-dir outputs/best_mc/models_mc \
   --outdir outputs/best_mc
 ```
 
-### Hyperparameter sweep (grid search over lambda_1, lambda_3)
-```bash
-wandb sweep sweep_lambda_train80.yaml
-wandb agent <SWEEP_ID>
-```
+### 4c. Validate on held-out 20% MC
 
-### Validate on held-out 20% MC
-```bash
-conda run -n AutoTrig python RL/demo_single_trigger_grpo_as_feature_all_rollout.py \
-  --input Data/Trigger_food_MC.h5 --control MC \
-  --models-dir outputs/best_mc/models_mc \
-  --run-ht --run-adt --skip-chunks 148 \
-  --lambda_1 0.25 --lambda_3 0.75
-```
+Evaluate the trained models on chunks 149-185 (the held-out validation set) to confirm generalization without data leakage.
 
-### Rollout MC-trained models on full MC
 ```bash
-conda run -n AutoTrig python RL/demo_single_trigger_grpo_as_feature_all_rollout.py \
+python RL/demo_single_trigger_grpo_as_feature_all_rollout.py \
   --input Data/Trigger_food_MC.h5 --control MC \
   --models-dir outputs/best_mc/models_mc \
   --run-ht --run-adt \
-  --lambda_1 0.25 --lambda_3 0.75
+  --skip-chunks 148 \
+  --lambda_1 0.25 --lambda_3 0.75 \
+  --outdir outputs/val_20pct_mc
 ```
 
-### Rollout MC-trained models on CMS real data
+### 4d. Deploy on CMS real data
+
+Roll out the MC-trained models on CMS Run 2016 collision data to evaluate sim-to-real transfer.
+
 ```bash
-conda run -n AutoTrig python RL/demo_single_trigger_grpo_as_feature_all_rollout.py \
+python RL/demo_single_trigger_grpo_as_feature_all_rollout.py \
   --input Data/Matched_data_2016_dim2.h5 --control RealData \
   --models-dir outputs/best_mc/models_mc \
   --run-ht --run-adt \
-  --lambda_1 0.25 --lambda_3 0.75
+  --lambda_1 0.25 --lambda_3 0.75 \
+  --outdir outputs/rollout_real
 ```
 
-### Train and rollout directly on CMS real data
+### 4e. (Optional) Evaluate on full MC
+
+Roll out trained models on the entire MC dataset (all 185 chunks) for completeness.
+
 ```bash
-# Train
-conda run -n AutoTrig python RL/demo_single_trigger_grpo_as_feature_all_training.py \
+python RL/demo_single_trigger_grpo_as_feature_all_rollout.py \
+  --input Data/Trigger_food_MC.h5 --control MC \
+  --models-dir outputs/best_mc/models_mc \
+  --run-ht --run-adt \
+  --lambda_1 0.25 --lambda_3 0.75 \
+  --outdir outputs/rollout_full_mc
+```
+
+### 4f. (Optional) Train and deploy directly on CMS real data
+
+For comparison, train directly on real data and evaluate on it (no sim-to-real gap).
+
+```bash
+# Train on real data
+python RL/demo_single_trigger_grpo_as_feature_all_training.py \
   --input Data/Matched_data_2016_dim2.h5 --control RealData \
   --run-ht --run-adt --save-models \
   --lambda_1 0.25 --lambda_3 0.75 \
-  --models-dir outputs/best_real/models_real
+  --models-dir outputs/best_real/models_real \
+  --outdir outputs/best_real
 
-# Rollout
-conda run -n AutoTrig python RL/demo_single_trigger_grpo_as_feature_all_rollout.py \
+# Deploy real-trained models on real data
+python RL/demo_single_trigger_grpo_as_feature_all_rollout.py \
   --input Data/Matched_data_2016_dim2.h5 --control RealData \
   --models-dir outputs/best_real/models_real \
   --run-ht --run-adt \
-  --lambda_1 0.25 --lambda_3 0.75
+  --lambda_1 0.25 --lambda_3 0.75 \
+  --outdir outputs/rollout_real_on_real
 ```
 
 ### Key RL arguments
 
 | Argument | Description |
 |----------|-------------|
-| `--max-chunks N` | Use only first N chunks (148 = 80% train split) |
-| `--skip-chunks N` | Skip first N chunks (148 = 20% validation split) |
-| `--save-models` | Save trained model checkpoints |
-| `--models-dir PATH` | Load/save models from PATH |
+| `--max-chunks N` | Use only first N chunks for training (148 = 80% train split) |
+| `--skip-chunks N` | Skip first N chunks for validation (148 = start at 20% held-out) |
+| `--save-models` | Save trained model checkpoints to disk |
+| `--models-dir PATH` | Directory to load/save model `.pt` files |
 | `--run-ht` | Enable HT trigger alongside AD trigger |
-| `--run-adt` | Enable ADT baseline |
-| `--alpha` | tt-bar focus weight (default: 0.7) |
+| `--run-adt` | Enable ADT baseline (DQN with action-hold) |
+| `--alpha` | $t\bar{t}$ focus weight (default: 0.7) |
 | `--lambda_1` | Background rate tracking reward weight (default: 0.5) |
 | `--lambda_3` | Threshold movement penalty weight (default: 0.2) |
+| `--input PATH` | Input dataset path |
+| `--control MC\|RealData` | Data source type for calibration logic |
+| `--outdir PATH` | Output directory for plots and logs |
 
 ## Step 5 Generate Summary Plots
 ### Summary of different agents’ Performance (default:MC)
