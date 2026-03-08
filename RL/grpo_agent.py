@@ -111,37 +111,24 @@ class GRPOConfig:
 #         h = torch.cat([mean, mx, last], dim=-1)
 #         return self.mlp(h)
 
-class SeqPolicy(nn.Module):
+from RL.state_encoder import SeqPolicyEncoder
+
+class SeqPolicy(SeqPolicyEncoder):
     """
     Lightweight sequence -> logits policy.
     Input:  x of shape (B, K, F)
     Output: logits of shape (B, A)
 
-    Architecture: 1-layer GRU encoder + linear head
-      - GRU: feat_dim -> hidden
-      - Head: hidden -> n_actions
+    Architecture: RNN encoder + linear head (default: GRU + Linear)
+    Uses the unified StateEncoder for consistent state representation
+    across all RL agents. RNN type is configurable for FPGA ablation.
     """
-    def __init__(self, feat_dim: int, n_actions: int, hidden: int = 32):
-        super().__init__()
-        self.feat_dim = int(feat_dim)
-        self.n_actions = int(n_actions)
-
-        # Single-layer GRU (num_layers=1 by default)
-        self.gru = nn.GRU(
-            input_size=self.feat_dim,
-            hidden_size=int(hidden),
-            num_layers=1,
-            batch_first=True,
+    def __init__(self, feat_dim: int, n_actions: int, hidden: int = 32,
+                 rnn_type: str = "gru", num_layers: int = 1):
+        super().__init__(
+            feat_dim=feat_dim, n_actions=n_actions, hidden=hidden,
+            rnn_type=rnn_type, num_layers=num_layers,
         )
-
-        # Single linear projection to action logits
-        self.head = nn.Linear(int(hidden), self.n_actions)
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        # x: (B, K, F)
-        _, h = self.gru(x)      # h: (1, B, hidden)
-        h_last = h[-1]          # (B, hidden)
-        return self.head(h_last)  # (B, A)
     
 class GRPOBuffer:
     """
@@ -178,19 +165,20 @@ class GRPOBuffer:
 
 
 class GRPOAgent:
-    def __init__(self, seq_len: int, feat_dim: int, n_actions: int, cfg: GRPOConfig, beta: float, alpha: float, lambda_1: float, seed: int = 0,
-                 reward_cfg: Optional[GRPORewardCfg] = None):
+    def __init__(self, seq_len: int, feat_dim: int, n_actions: int, cfg: GRPOConfig, beta: float = 0.02, alpha: float = 0.2, lambda_1: float = 0.5, seed: int = 0,
+                 reward_cfg: Optional[GRPORewardCfg] = None, rnn_type: str = "gru"):
         self.seq_len = int(seq_len)
         self.feat_dim = int(feat_dim)
         self.n_actions = int(n_actions)
         self.cfg = cfg
+        self.rnn_type = rnn_type
 
         torch.manual_seed(seed)
         np.random.seed(seed)
 
         self.device = torch.device(cfg.device)
-        self.pi = SeqPolicy(feat_dim=feat_dim, n_actions=n_actions).to(self.device)
-        self.pi_ref = SeqPolicy(feat_dim=feat_dim, n_actions=n_actions).to(self.device)
+        self.pi = SeqPolicy(feat_dim=feat_dim, n_actions=n_actions, rnn_type=rnn_type).to(self.device)
+        self.pi_ref = SeqPolicy(feat_dim=feat_dim, n_actions=n_actions, rnn_type=rnn_type).to(self.device)
         self.pi_ref.load_state_dict(self.pi.state_dict())
         for p in self.pi_ref.parameters():
             p.requires_grad = False
@@ -309,7 +297,7 @@ class GRPOAgent:
         occ_mid: float = 0.0,
         update_dual: bool = False,
         signal_multiplier: float = 1.0, #signal multiplier for scaling the reward
-        beta: float = 0.02, #lambda_3,
+        beta: float = 0.02, #lambda_2,
         lambda_1: float = 0.2, #additional penalty multiplier for the signal term (optional)
         alpha: float = 0.2, #signal mix NOTE unify with DQN agent
     ) -> float:
@@ -341,7 +329,7 @@ class GRPOAgent:
             # linear penalty outside band, continuous at ae=1
             violation = - (err - 1.0)
 
-        move_pen = abs(float(delta_applied)) / max_delta #moving penalty for lambda_3
+        move_pen = abs(float(delta_applied)) / max_delta #moving penalty for lambda_2
 
         if prev_bg is None:
             stab_pen = 0.0

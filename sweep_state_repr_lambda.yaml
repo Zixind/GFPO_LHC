@@ -1,9 +1,11 @@
-program: RL/demo_single_trigger_grpo_as_feature_all_training.py
+program: RL/ablation_state_repr.py
 method: grid
 metric:
-  name: AD_GFPO-F_tt_overall
+  name: AD_GFPO-F_InBand
   goal: maximize
 parameters:
+  rnn_type:
+    values: ["gru", "lstm", "rnn", "rnn_relu"]
   lambda_1:
     values: [0.0, 0.25, 0.5, 0.75, 1.0]
   lambda_2:
@@ -12,9 +14,14 @@ command:
   - ${env}
   - python
   - ${program}
+  - "--rnn-type"
+  - ${rnn_type}
+  - "--lambda_1"
+  - ${lambda_1}
+  - "--lambda_2"
+  - ${lambda_2}
   - ${args}
   - "--run-ht"
   - "--save-models"
   - "--max-chunks"
   - "148"
-  - "--run-adt"

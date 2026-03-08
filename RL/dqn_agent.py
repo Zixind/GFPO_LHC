@@ -454,17 +454,17 @@ def compute_reward(
     delta_applied: float,
     max_delta: float,
     alpha: float = 0.2,
-    beta: float = 0.02, #lambda_3
+    beta: float = 0.02, #lambda_2
     clip: Tuple[float, float] = (-10.0, 10.0),
     prev_bg_rate: Optional[float] = None,
     gamma_stab: float = 0.25, # weight for stability penalty 0.25 default
     lambda_1: float = 0.5, #ablation study for reward: bg rate tracking
 ) -> float:
     r"""
-    Input: lambda_1, lambda_2, lambda_3 are for rate tracking, signal efficiency, and move penalty, respectively.
+    Input: lambda_1, lambda_2, lambda_2 are for rate tracking, signal efficiency, and move penalty, respectively.
     When do ablation study we will make lambda_2 as 1-lambda_1
     max_delta is the maximum allowed change in threshold per step, used to normalize the move penalty.
-    beta is lambda_3
+    beta is lambda_2
 
 
     R_t^{\cdot}
@@ -513,7 +513,7 @@ def compute_reward(
     sig_term = float(alpha) * tt + (1.0 - alpha) * aa #alpha ttbar focus
 
 
-    # moving penalty (lambda_3)
+    # moving penalty (lambda_2)
     move_pen = abs(float(delta_applied)) / max_delta
 
     if prev_bg_rate is None:
@@ -529,37 +529,28 @@ def compute_reward(
 
 
 
-### Encode event-level sequences with a GRU-based Q-network ###
+### Encode event-level sequences with a RNN-based Q-network ###
+# Uses the unified StateEncoder for consistent state representation.
 # ------------------------ sequence network ------------------------
-class SeqQNet(nn.Module):
+from RL.state_encoder import SeqQNetEncoder
+
+class SeqQNet(SeqQNetEncoder):
     """
     Q-network for event-level sequences.
     Input:  x of shape (B, K, F)
     Output: Q-values of shape (B, n_actions)
+
+    Uses unified StateEncoder (RNN + Linear). Default: GRU + Linear.
     """
-    def __init__(self, feat_dim: int, n_actions: int, hidden: int = 64):
-        super().__init__()
-        self.gru = nn.GRU(input_size=feat_dim, hidden_size=hidden, batch_first=True)
-        self.head = nn.Sequential(
-            nn.Linear(hidden, 64), nn.ReLU(),
-            nn.Linear(64, n_actions),
+    def __init__(self, feat_dim: int, n_actions: int, hidden: int = 32,
+                 rnn_type: str = "gru", num_layers: int = 1):
+        super().__init__(
+            feat_dim=feat_dim, n_actions=n_actions, hidden=hidden,
+            rnn_type=rnn_type, num_layers=num_layers,
         )
 
-    def forward(self, x):
-        # x: (B, K, F)
-        _, h = self.gru(x)      # h: (1, B, hidden)
-        h = h[-1]               # (B, hidden)
-        return self.head(h)
-
-class SeqQNet_ligher(nn.Module):
-    def __init__(self, feat_dim: int, n_actions: int, hidden: int = 32):
-        super().__init__()
-        self.gru = nn.GRU(input_size=feat_dim, hidden_size=hidden, batch_first=True)
-        self.head = nn.Linear(hidden, n_actions)
-
-    def forward(self, x):
-        _, h = self.gru(x)          # h: (1, B, hidden)
-        return self.head(h[-1])     # (B, n_actions)
+# Keep alias for backward compatibility
+SeqQNet_ligher = SeqQNet
 
 class ReplayBufferSeq:
     def __init__(self, capacity: int = 50_000):
@@ -606,16 +597,18 @@ class SeqDQNAgent:
         seq_len: int,
         feat_dim: int,
         n_actions: int,
-        lambda_1: float,
+        lambda_1: float = 0.5,
         seed: int = 0,
         device: Optional[str] = None,
         cfg: Optional[DQNConfig] = None,
+        rnn_type: str = "gru",
     ):
         self.seq_len = int(seq_len)
         self.feat_dim = int(feat_dim)
         self.n_actions = int(n_actions)
         self.cfg = cfg or DQNConfig()
         self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
+        self.rnn_type = rnn_type
 
         random.seed(seed)
         np.random.seed(seed)
@@ -623,8 +616,8 @@ class SeqDQNAgent:
         if torch.cuda.is_available():
             torch.cuda.manual_seed_all(seed)
 
-        self.q = SeqQNet(self.feat_dim, self.n_actions).to(self.device)
-        self.tgt = SeqQNet(self.feat_dim, self.n_actions).to(self.device)
+        self.q = SeqQNet(self.feat_dim, self.n_actions, rnn_type=rnn_type).to(self.device)
+        self.tgt = SeqQNet(self.feat_dim, self.n_actions, rnn_type=rnn_type).to(self.device)
         self.tgt.load_state_dict(self.q.state_dict())
 
         self.opt = optim.Adam(self.q.parameters(), lr=self.cfg.lr)
@@ -683,7 +676,7 @@ class SeqDQNAgent:
         sig_rate_2: float,
         delta_applied: float,
         max_delta: float,
-        lambda_1: float,
+        lambda_1: float = 0.5,
         alpha: float = 0.2,
         beta: float = 0.02,
         clip: tuple[float, float] = (-10.0, 10.0),

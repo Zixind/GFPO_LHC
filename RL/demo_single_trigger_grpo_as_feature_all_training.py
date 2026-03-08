@@ -3490,7 +3490,7 @@ def main():
                     help="tolerance in percent units; 0.025 corresponds to [90,110] kHz when target=0.25%")
     ap.add_argument("--alpha", type=float, default=0.7) #alpha ttbar focus
     ap.add_argument("--lambda_1", type=float, default=0.25, help="main reward weight for bg rate tracking") #ablation study for reward: bg rate tracking
-    ap.add_argument("--lambda_3", type=float, default=1.0, help="beta moving penalty weight")  #ablation_study for reward: moving penality
+    ap.add_argument("--lambda_2", type=float, default=1.0, help="beta moving penalty weight")  #ablation_study for reward: moving penality
     ap.add_argument("--violation-penalty", type=float, default=1.0,
                     help="penalty weight for bg rate outside of target±tol band")
 
@@ -3774,11 +3774,11 @@ def main():
         tol=tol,
         mode="lex",        # "lex" default; "lag" if adaptive lambda
         mix=args.alpha, #increase for tt
-        beta_move=args.lambda_3,
+        beta_move=args.lambda_2,
         gamma_stab=0.25,
         k_violate=args.violation_penalty,
         w_occ=float(args.occ_pen)
-    ), beta = args.lambda_3, alpha = args.alpha, lambda_1 = args.lambda_1)
+    ), beta = args.lambda_2, alpha = args.alpha, lambda_1 = args.lambda_1)
     gfpo_cfg_as = GRPOConfig(
         lr=args.grpo_lr,
         beta_kl=args.beta_kl,
@@ -3794,11 +3794,11 @@ def main():
         tol=tol,
         mode="lex",        # "lex" default; "lag" if adaptive lambda
         mix=args.alpha, #increase for tt
-        beta_move=args.lambda_3,
+        beta_move=args.lambda_2,
         gamma_stab=0.25,
         k_violate=args.violation_penalty,
         w_occ=float(args.occ_pen)
-    ), beta = args.lambda_3, alpha = args.alpha, lambda_1 = args.lambda_1)
+    ), beta = args.lambda_2, alpha = args.alpha, lambda_1 = args.lambda_1)
 
     # ---------------- GFPO variants (AS) ----------------
     gfpo_as_agents = {}
@@ -3839,7 +3839,7 @@ def main():
         target=target, tol=tol,
         eps_min=args.dqn_eps_min, eps_decay=args.dqn_eps_decay,
         train_steps_per_micro=args.dqn_train_steps_per_micro,
-        alpha=args.alpha, beta=args.lambda_3, lambda_1 = args.lambda_1
+        alpha=args.alpha, beta=args.lambda_2, lambda_1 = args.lambda_1
         ))
     
     if "dqn_f" in BASELINES:
@@ -3852,7 +3852,7 @@ def main():
         target=target, tol=tol,
         eps_min=args.dqn_f_eps, eps_decay=1.0,  # no decay
         train_steps_per_micro=0,               # no training during rollout
-        alpha=args.alpha, beta=args.lambda_3, lambda_1=args.lambda_1, train_chunks=args.dqn_f_train_chunks, eps_after_freeze=args.dqn_f_eps
+        alpha=args.alpha, beta=args.lambda_2, lambda_1=args.lambda_1, train_chunks=args.dqn_f_train_chunks, eps_after_freeze=args.dqn_f_eps
         ))
 
     
@@ -3879,11 +3879,11 @@ def main():
         target=target, tol=tol,
         eps_min=args.dqn_eps_min, eps_decay=args.dqn_eps_decay,
         train_steps_per_micro=0,               # ignored by ADT (no per-micro train)
-        alpha=args.alpha, beta=args.lambda_3,      # used for reward_mode="lhc"
+        alpha=args.alpha, beta=args.lambda_2,      # used for reward_mode="lhc"
         adt_l=args.adt_l,
         train_steps_per_episode=args.adt_train_steps_per_episode,
         reward_mode=args.adt_reward_mode,
-        adt_alpha=args.alpha, adt_beta=args.lambda_3, lambda_1 = args.lambda_1
+        adt_alpha=args.alpha, adt_beta=args.lambda_2, lambda_1 = args.lambda_1
         ))
 
     if "grpo" in BASELINES:
@@ -3893,7 +3893,7 @@ def main():
         as_mid=as_mid, as_span=as_span, near_widths=near_widths_as, K=K,
         target=target, tol=tol,
         train_every=args.train_every, temperature=args.as_temperature,
-        group_size_keep=args.group_size_keep, signal_multiplier=args.signal_multiplier_as, beta = args.lambda_3, lambda_1 = args.lambda_1, alpha = args.alpha
+        group_size_keep=args.group_size_keep, signal_multiplier=args.signal_multiplier_as, beta = args.lambda_2, lambda_1 = args.lambda_1, alpha = args.alpha
         ))
 
 
@@ -3901,7 +3901,7 @@ def main():
         controllers_as.append(GFPOCtrl(
         "GFPO-F", fixed_AS_cut, as_lo, as_hi,
         agent=GRPOAgent(seq_len=K, feat_dim=feat_dim_as, n_actions=len(AS_DELTAS), cfg=cfg, seed=SEED,
-                        reward_cfg=agent.reward_cfg, beta = args.lambda_3, alpha = args.alpha, lambda_1 = args.lambda_1),
+                        reward_cfg=agent.reward_cfg, beta = args.lambda_2, alpha = args.alpha, lambda_1 = args.lambda_1),
         deltas=AS_DELTAS, step=AS_STEP, max_delta=MAX_DELTA_AS,
         as_mid=as_mid, as_span=as_span, near_widths=near_widths_as, K=K,
         target=target, tol=tol,
@@ -3909,14 +3909,14 @@ def main():
         gfpo_filter="abs_err_topk",
         group_size_sample=args.group_size_sample, group_size_keep=args.group_size_keep,
         feas_mult=args.gfpo_feas_mult, mix=args.gfpo_mix_as,
-        band_mult=args.band_mult_as, sig_bonus=args.sig_bonus_as, signal_multiplier=args.signal_multiplier_as, beta = args.lambda_3, alpha = args.alpha, lambda_1 = args.lambda_1
+        band_mult=args.band_mult_as, sig_bonus=args.sig_bonus_as, signal_multiplier=args.signal_multiplier_as, beta = args.lambda_2, alpha = args.alpha, lambda_1 = args.lambda_1
         ))
 
     if "gfpo_fr" in BASELINES:
         controllers_as.append(GFPOCtrl(
         "GFPO-FR", fixed_AS_cut, as_lo, as_hi,
         agent=GRPOAgent(seq_len=K, feat_dim=feat_dim_as, n_actions=len(AS_DELTAS), cfg=cfg, seed=SEED,
-                        reward_cfg=agent.reward_cfg, beta = args.lambda_3, lambda_1 = args.lambda_1, alpha = args.alpha),
+                        reward_cfg=agent.reward_cfg, beta = args.lambda_2, lambda_1 = args.lambda_1, alpha = args.alpha),
         deltas=AS_DELTAS, step=AS_STEP, max_delta=MAX_DELTA_AS,
         as_mid=as_mid, as_span=as_span, near_widths=near_widths_as, K=K,
         target=target, tol=tol,
@@ -3924,7 +3924,7 @@ def main():
         gfpo_filter="feasible_first_sig",
         group_size_sample=args.group_size_sample, group_size_keep=args.group_size_keep,
         feas_mult=args.gfpo_feas_mult, mix=args.gfpo_mix_as,
-        band_mult=args.band_mult_as, sig_bonus=args.sig_bonus_as, signal_multiplier=args.signal_multiplier_as, beta = args.lambda_3, alpha = args.alpha, lambda_1 = args.lambda_1
+        band_mult=args.band_mult_as, sig_bonus=args.sig_bonus_as, signal_multiplier=args.signal_multiplier_as, beta = args.lambda_2, alpha = args.alpha, lambda_1 = args.lambda_1
         ))
 
     if "ppo" in BASELINES:
@@ -3953,7 +3953,7 @@ def main():
                 target=target,
                 tol=tol,
                 alpha=args.alpha,
-                beta=args.lambda_3,
+                beta=args.lambda_2,
                 ppo_temperature=args.as_temperature,
                 lambda_1 = args.lambda_1
         )
@@ -4025,7 +4025,7 @@ def main():
             target=target, tol=tol,
             eps_min=args.dqn_eps_min, eps_decay=args.dqn_eps_decay,
             train_steps_per_micro=args.dqn_train_steps_per_micro,
-            alpha=args.alpha, beta=args.lambda_3, lambda_1 = args.lambda_1
+            alpha=args.alpha, beta=args.lambda_2, lambda_1 = args.lambda_1
             ))
         if "dqn_f" in BASELINES:
             agent_dqnf_ht = SeqDQNAgent(seq_len=K, feat_dim=feat_dim_ht, n_actions=len(HT_DELTAS), cfg=dqn_ht_cfg, seed=SEED+11, lambda_1 = args.lambda_1)
@@ -4037,7 +4037,7 @@ def main():
             target=target, tol=tol,
             eps_min=args.dqn_f_eps, eps_decay=1.0,  # no decay
             train_steps_per_micro=0,               # no training during rollout
-            alpha=args.alpha, train_chunks=args.dqn_f_train_chunks, eps_after_freeze=args.dqn_f_eps, beta = args.lambda_3, lambda_1 = args.lambda_1
+            alpha=args.alpha, train_chunks=args.dqn_f_train_chunks, eps_after_freeze=args.dqn_f_eps, beta = args.lambda_2, lambda_1 = args.lambda_1
             ))
         
         # --- ADT baseline (HT) ---
@@ -4063,11 +4063,11 @@ def main():
             target=target, tol=tol,
             eps_min=args.dqn_eps_min, eps_decay=args.dqn_eps_decay,
             train_steps_per_micro=0,              # ignored by ADT
-            alpha=args.alpha, beta=args.lambda_3,
+            alpha=args.alpha, beta=args.lambda_2,
             adt_l=args.adt_l,
             train_steps_per_episode=args.adt_train_steps_per_episode,
             reward_mode=args.adt_reward_mode,
-            adt_alpha=args.alpha, adt_beta=args.lambda_3, lambda_1 = args.lambda_1
+            adt_alpha=args.alpha, adt_beta=args.lambda_2, lambda_1 = args.lambda_1
             ))
         
         if "grpo" in BASELINES:
@@ -4077,13 +4077,13 @@ def main():
             )
             agent_ht = GRPOAgent(
                 seq_len=K, feat_dim=feat_dim_ht, n_actions=len(HT_DELTAS),
-                cfg=cfg_ht, seed=SEED, beta = args.lambda_3, alpha = args.alpha, lambda_1 = args.lambda_1,
+                cfg=cfg_ht, seed=SEED, beta = args.lambda_2, alpha = args.alpha, lambda_1 = args.lambda_1,
                 reward_cfg=GRPORewardCfg(
                 target=target,
                 tol=tol,
                 mode="lex",        # "lex" recommended
                 mix=args.alpha, #increase for tt
-                beta_move=args.lambda_3,
+                beta_move=args.lambda_2,
                 gamma_stab=0.25,
                 k_violate=args.violation_penalty,
                 w_occ=float(args.occ_pen)
@@ -4095,7 +4095,7 @@ def main():
             ht_mid=ht_mid, ht_span=ht_span, near_widths=near_widths_ht, K=K,
             target=target, tol=tol,
             train_every=args.train_every, temperature=args.ht_temperature,
-            group_size_keep=args.group_size_keep, signal_multiplier=args.signal_multiplier_ht, beta = args.lambda_3, lambda_1 = args.lambda_1, alpha = args.alpha
+            group_size_keep=args.group_size_keep, signal_multiplier=args.signal_multiplier_ht, beta = args.lambda_2, lambda_1 = args.lambda_1, alpha = args.alpha
             ))
 
 
@@ -4103,7 +4103,7 @@ def main():
             controllers_ht.append(GFPOCtrlHT(
             "GFPO-F", fixed_Ht_cut, ht_lo, ht_hi,
             agent=GRPOAgent(seq_len=K, feat_dim=feat_dim_ht, n_actions=len(HT_DELTAS), cfg=cfg, seed=SEED,
-                        reward_cfg=agent.reward_cfg, beta = args.lambda_3, alpha = args.alpha, lambda_1 = args.lambda_1),
+                        reward_cfg=agent.reward_cfg, beta = args.lambda_2, alpha = args.alpha, lambda_1 = args.lambda_1),
                 deltas=HT_DELTAS, step=HT_STEP, max_delta=MAX_DELTA_HT,
                 ht_mid=ht_mid, ht_span=ht_span, near_widths=near_widths_ht, K=K,
                 target=target, tol=tol,
@@ -4112,13 +4112,13 @@ def main():
                 group_size_sample=args.group_size_sample, group_size_keep=args.group_size_keep,
                 feas_mult=args.gfpo_feas_mult, mix=args.gfpo_mix_ht,
                 band_mult=args.band_mult_ht, sig_bonus=args.sig_bonus, signal_multiplier=args.signal_multiplier_ht
-                , beta = args.lambda_3, alpha = args.alpha, lambda_1 = args.lambda_1))
+                , beta = args.lambda_2, alpha = args.alpha, lambda_1 = args.lambda_1))
 
         if "gfpo_fr" in BASELINES:
             controllers_ht.append(GFPOCtrlHT(
             "GFPO-FR", fixed_Ht_cut, ht_lo, ht_hi,
             agent=GRPOAgent(seq_len=K, feat_dim=feat_dim_ht, n_actions=len(HT_DELTAS), cfg=cfg, seed=SEED,
-                        reward_cfg=agent.reward_cfg, beta = args.lambda_3, alpha = args.alpha, lambda_1 = args.lambda_1),
+                        reward_cfg=agent.reward_cfg, beta = args.lambda_2, alpha = args.alpha, lambda_1 = args.lambda_1),
                 deltas=HT_DELTAS, step=HT_STEP, max_delta=MAX_DELTA_HT,
                 ht_mid=ht_mid, ht_span=ht_span, near_widths=near_widths_ht, K=K,
                 target=target, tol=tol,
@@ -4126,7 +4126,7 @@ def main():
                 gfpo_filter="feasible_first_sig",
                 group_size_sample=args.group_size_sample, group_size_keep=args.group_size_keep,
                 feas_mult=args.gfpo_feas_mult, mix=args.gfpo_mix_ht,
-                band_mult=args.band_mult_ht, sig_bonus=args.sig_bonus, signal_multiplier=args.signal_multiplier_ht, beta = args.lambda_3, alpha = args.alpha, lambda_1 = args.lambda_1
+                band_mult=args.band_mult_ht, sig_bonus=args.sig_bonus, signal_multiplier=args.signal_multiplier_ht, beta = args.lambda_2, alpha = args.alpha, lambda_1 = args.lambda_1
             ))
     
         
@@ -4147,7 +4147,7 @@ def main():
                 ht_mid=ht_mid, ht_span=ht_span,
                 near_widths=near_widths_ht, K=K,
                 target=target, tol=tol,
-                alpha=args.alpha, beta=args.lambda_3, ppo_temperature=args.ht_temperature, lambda_1 = args.lambda_1
+                alpha=args.alpha, beta=args.lambda_2, ppo_temperature=args.ht_temperature, lambda_1 = args.lambda_1
             ))
 
         
@@ -4175,13 +4175,13 @@ def main():
 
         gfpo_ht = GRPOAgent(
                 seq_len=K, feat_dim=feat_dim_ht, n_actions=len(HT_DELTAS),
-                cfg=gfpo_cfg_ht, seed=SEED, beta = args.lambda_3, alpha = args.alpha, lambda_1 = args.lambda_1,
+                cfg=gfpo_cfg_ht, seed=SEED, beta = args.lambda_2, alpha = args.alpha, lambda_1 = args.lambda_1,
                 reward_cfg=GRPORewardCfg(
                 target=target,
                 tol=tol,
                 mode="lex",        # "lex" recommended
                 mix=args.alpha, #increase for tt
-                beta_move=args.lambda_3,
+                beta_move=args.lambda_2,
                 gamma_stab=0.25,
                 k_violate=args.violation_penalty,
                 w_occ=float(args.occ_pen),
@@ -4822,7 +4822,7 @@ def main():
                 "mc_file": args.input,
                 "alpha": args.alpha,
                 "lambda_1": args.lambda_1,
-                "lambda_3": args.lambda_3,
+                "lambda_2": args.lambda_2,
             },
         )
         print("Model saving complete.")

@@ -5,7 +5,7 @@
 Each plot:
   X-axis = InBand fraction (bg rate within [90,110] kHz tolerance)
   Y-axis = signal efficiency (overall)
-  9 method series, each with 25 points (5 lambda_1 x 5 lambda_3)
+  9 method series, each with 25 points (5 lambda_1 x 5 lambda_2)
   Per-method Pareto frontier connecting non-dominated points
 
 Usage:
@@ -80,7 +80,7 @@ def extract_method_data(rows, trigger, method):
         tt.append(float(s[tt_key]))
         aa.append(float(s.get(aa_key, 0)))
         l1.append(float(c.get("lambda_1", 0)))
-        l3.append(float(c.get("lambda_3", 0)))
+        l3.append(float(c.get("lambda_2", 0)))
 
     return (np.asarray(ib), np.asarray(tt), np.asarray(aa),
             np.asarray(l1), np.asarray(l3))
@@ -102,7 +102,7 @@ def plot_one(rows, trigger, sig_key, sig_label, outpath):
         ax.scatter(inband, sig, c=color, marker=marker, s=80,
                    edgecolors="k", linewidths=0.3, zorder=3, label=method, alpha=0.85)
 
-        # Annotate with (lambda_1, lambda_3)
+        # Annotate with (lambda_1, lambda_2)
         for i in range(len(inband)):
             ax.annotate(f"({l1[i]:.2f},{l3[i]:.2f})",
                         (inband[i], sig[i]),
