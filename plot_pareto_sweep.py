@@ -19,7 +19,7 @@ matplotlib.use("Agg")   # non-interactive backend, no plt.show() blocking
 import matplotlib.pyplot as plt
 import wandb
 
-PLOT_METHODS = ["Constant", "PID", "DQN", "DQN-F", "PPO", "ADT", "GRPO", "GFPO-F", "GFPO-FR"]
+PLOT_METHODS = ["DQN", "PPO", "ADT", "GRPO", "GFPO-F", "GFPO-FR"]
 
 METHOD_MARKERS = {
     "Constant": "o", "PID": "s", "DQN": "^", "DQN-F": "v",
@@ -116,12 +116,12 @@ def plot_one(rows, trigger, sig_key, sig_label, outpath):
             pidx = pidx[order]
             ax.plot(inband[pidx], sig[pidx], "--", color=color, linewidth=1.5, alpha=0.7, zorder=2)
 
-    ax.set_xlabel("In-Band Fraction (bg rate within [90, 110] kHz)", fontsize=15)
-    ax.set_ylabel(f"{sig_label} Signal Efficiency (overall)", fontsize=15)
-    ax.set_title(f"{trigger} Trigger — {sig_label}", fontsize=17)
-    ax.legend(fontsize=10, ncol=3, loc="best", framealpha=0.8)
+    ax.set_xlabel("InBand Rate", fontsize=26)
+    ax.set_ylabel("Overall Signal Efficiency", fontsize=26)
+    # No title — keep plots clean for paper
+    ax.legend(fontsize=22, ncol=3, loc="best", framealpha=0.8)
     ax.grid(True, alpha=0.3)
-    ax.tick_params(labelsize=12)
+    ax.tick_params(labelsize=18)
 
     fig.tight_layout()
     fig.savefig(f"{outpath}.png", dpi=300, bbox_inches="tight")

@@ -17,3 +17,4 @@ command:
   - "--save-models"
   - "--max-chunks"
   - "148"
+  - "--run-adt"

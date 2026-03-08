@@ -219,7 +219,9 @@ wandb sweep sweep_lambda_train80.yaml
 wandb agent <SWEEP_ID>
 ```
 
-After the sweep, inspect the wandb dashboard to select the best $(\lambda_1, \lambda_3)$ based on validation signal efficiency and MAE.
+After the sweep, inspect the wandb dashboard to select the best $(\lambda_1, \lambda_3)$ based on validation signal efficiency and InBand rate.
+
+**Recommended defaults:** Based on Pareto frontier analysis across all methods (DQN, PPO, ADT, GRPO, GFPO-F, GFPO-FR) and both triggers (AD, HT), we select $\lambda_1 = 0.25$, $\lambda_3 = 1.0$. This combination achieves mean InBand = 0.952 with strong signal efficiency across all methods while keeping both penalty terms active. GFPO-F is the most robust method, achieving InBand $\geq$ 0.993 regardless of $(\lambda_1, \lambda_3)$.
 
 ### 4b. Train on 80% MC
 
@@ -229,7 +231,7 @@ Train RL agents (GFPO-F, GFPO-FR, GRPO, DQN, PPO, ADT) on the first 148 chunks a
 python RL/demo_single_trigger_grpo_as_feature_all_training.py \
   --run-ht --run-adt --save-models \
   --max-chunks 148 \
-  --lambda_1 0.25 --lambda_3 0.75 \
+  --lambda_1 0.25 --lambda_3 1.0 \
   --models-dir outputs/best_mc/models_mc \
   --outdir outputs/best_mc
 ```
@@ -244,7 +246,7 @@ python RL/demo_single_trigger_grpo_as_feature_all_rollout.py \
   --models-dir outputs/best_mc/models_mc \
   --run-ht --run-adt \
   --skip-chunks 148 \
-  --lambda_1 0.25 --lambda_3 0.75 \
+  --lambda_1 0.25 --lambda_3 1.0 \
   --outdir outputs/val_20pct_mc
 ```
 
@@ -257,7 +259,7 @@ python RL/demo_single_trigger_grpo_as_feature_all_rollout.py \
   --input Data/Matched_data_2016_dim2.h5 --control RealData \
   --models-dir outputs/best_mc/models_mc \
   --run-ht --run-adt \
-  --lambda_1 0.25 --lambda_3 0.75 \
+  --lambda_1 0.25 --lambda_3 1.0 \
   --outdir outputs/rollout_real
 ```
 
@@ -270,7 +272,7 @@ python RL/demo_single_trigger_grpo_as_feature_all_rollout.py \
   --input Data/Trigger_food_MC.h5 --control MC \
   --models-dir outputs/best_mc/models_mc \
   --run-ht --run-adt \
-  --lambda_1 0.25 --lambda_3 0.75 \
+  --lambda_1 0.25 --lambda_3 1.0 \
   --outdir outputs/rollout_full_mc
 ```
 
@@ -283,7 +285,7 @@ For comparison, train directly on real data and evaluate on it (no sim-to-real g
 python RL/demo_single_trigger_grpo_as_feature_all_training.py \
   --input Data/Matched_data_2016_dim2.h5 --control RealData \
   --run-ht --run-adt --save-models \
-  --lambda_1 0.25 --lambda_3 0.75 \
+  --lambda_1 0.25 --lambda_3 1.0 \
   --models-dir outputs/best_real/models_real \
   --outdir outputs/best_real
 
@@ -292,7 +294,7 @@ python RL/demo_single_trigger_grpo_as_feature_all_rollout.py \
   --input Data/Matched_data_2016_dim2.h5 --control RealData \
   --models-dir outputs/best_real/models_real \
   --run-ht --run-adt \
-  --lambda_1 0.25 --lambda_3 0.75 \
+  --lambda_1 0.25 --lambda_3 1.0 \
   --outdir outputs/rollout_real_on_real
 ```
 
@@ -307,8 +309,8 @@ python RL/demo_single_trigger_grpo_as_feature_all_rollout.py \
 | `--run-ht` | Enable HT trigger alongside AD trigger |
 | `--run-adt` | Enable ADT baseline (DQN with action-hold) |
 | `--alpha` | $t\bar{t}$ focus weight (default: 0.7) |
-| `--lambda_1` | Background rate tracking reward weight (default: 0.5) |
-| `--lambda_3` | Threshold movement penalty weight (default: 0.2) |
+| `--lambda_1` | Background rate tracking reward weight (default: 0.25) |
+| `--lambda_3` | Threshold movement penalty weight (default: 1.0) |
 | `--input PATH` | Input dataset path |
 | `--control MC\|RealData` | Data source type for calibration logic |
 | `--outdir PATH` | Output directory for plots and logs |

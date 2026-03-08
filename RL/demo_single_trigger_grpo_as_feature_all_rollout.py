@@ -3483,8 +3483,8 @@ def main():
     ap.add_argument("--tol", type=float, default=0.025,     # percent  (0.025% -> ±10kHz band)
                     help="tolerance in percent units; 0.025 corresponds to [90,110] kHz when target=0.25%")
     ap.add_argument("--alpha", type=float, default=0.7) #alpha ttbar focus
-    ap.add_argument("--lambda_1", type=float, default=0.5, help="main reward weight for bg rate tracking") #ablation study for reward: bg rate tracking
-    ap.add_argument("--lambda_3", type=float, default=0.2, help="beta moving penalty weight")  #ablation_study for reward: moving penality
+    ap.add_argument("--lambda_1", type=float, default=0.25, help="main reward weight for bg rate tracking") #ablation study for reward: bg rate tracking
+    ap.add_argument("--lambda_3", type=float, default=1.0, help="beta moving penalty weight")  #ablation_study for reward: moving penality
     ap.add_argument("--violation-penalty", type=float, default=1.0,
                     help="penalty weight for bg rate outside of target±tol band")
 
