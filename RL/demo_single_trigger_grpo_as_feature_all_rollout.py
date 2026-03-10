@@ -3685,8 +3685,8 @@ def main():
 
     # clip range (use calibration window range)
     ref_as = Bas[win_lo:win_hi]
-    as_lo = float(np.min(ref_as))
-    as_hi = float(np.max(ref_as))
+    as_lo = float(np.percentile(ref_as, 95.0))
+    as_hi = float(np.percentile(ref_as, 99.99))
     as_mid = 0.5 * (as_lo + as_hi)
     as_span = max(1e-6, as_hi - as_lo)
 

@@ -362,7 +362,7 @@ def make_event_seq_as(
     K,
     last_delta,
     max_delta,
-    near_widths=(0.01, 0.02, 0.05),
+    near_widths=(0.25, 0.5, 1.0),
     step=None,
     # (optional)
     tol=None,
@@ -768,7 +768,7 @@ def make_event_seq_as_v0(
     K,
     last_delta,
     max_delta,
-    near_widths=(0.01, 0.02, 0.05),
+    near_widths=(0.25, 0.5, 1.0),
     step = None
 ):
     asK  = _downsample_last_K(bas,  K)

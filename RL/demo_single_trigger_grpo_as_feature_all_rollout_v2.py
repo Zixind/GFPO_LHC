@@ -2848,22 +2848,22 @@ def _plot_two_hists(x1, x2, *, label1, label2, title, xlabel, outpath, run_label
 
 def _plot_exec_tradeoff(exec_f, exec_fr, *, title, outpath, run_label):
     """
-    Scatter: abs_err (x) vs sig_score (y), executed-only. Feasible points are filled, infeasible hollow.
+    Scatter: abs_err (x) vs sig_score (y), executed-only.
     """
+    COLORS = {"GFPO-F": "#1f77b4", "GFPO-FR": "#ff7f0e"}
+
     def scatter_one(ax, d, label):
-        x = d["abs_err"]; y = d["sig"]; feas = d["feas"]
+        x = d["abs_err"]; y = d["sig"]
         if x.size == 0:
             return
-        ax.scatter(x[~feas], y[~feas], s=18, alpha=0.55, facecolors="none", label=f"{label} (infeas)")
-        ax.scatter(x[feas],  y[feas],  s=18, alpha=0.55, label=f"{label} (feas)")
+        ax.scatter(x, y, s=18, alpha=0.55, color=COLORS[label], label=label)
 
     fig, ax = plt.subplots(figsize=(8.2, 5.6))
     scatter_one(ax, exec_f,  "GFPO-F")
     scatter_one(ax, exec_fr, "GFPO-FR")
-    ax.set_xlabel(r"$|bg-target|$  (percent units)")
-    ax.set_ylabel(r"Signal score  $mix\cdot t\bar t + (1-mix)\cdot h\to4b$")
+    ax.set_xlabel(r"$|r - r^*|$  (percent units)")
+    ax.set_ylabel("Combined Signal")
     ax.grid(True, linestyle="--", alpha=0.4)
-    ax.set_title(title)
     small_legend(ax, loc="best", ncol=1)
     add_cms_header(fig, run_label=run_label)
     finalize_diag_fig(fig)
@@ -4346,7 +4346,7 @@ def main():
     
 
     ap.add_argument("--load-models", action="store_true")
-    ap.add_argument("--models-dir", type=str, default="demos/demo_sing_grpo_as_feature_all_MC")
+    ap.add_argument("--models-dir", type=str, default="outputs/demo_sing_grpo_as_feature_all_MC/models_mc")
     ap.add_argument("--eval-only", action="store_true",
                     help="rollout only (no training); implies --load-models")
 
@@ -4446,8 +4446,8 @@ def main():
 
     # clip range (use calibration window range)
     ref_as = Bas[win_lo:win_hi]
-    as_lo = float(np.min(ref_as))
-    as_hi = float(np.max(ref_as))
+    as_lo = float(np.percentile(ref_as, 95.0))
+    as_hi = float(np.percentile(ref_as, 99.99))
     as_mid = 0.5 * (as_lo + as_hi)
     as_span = max(1e-6, as_hi - as_lo)
 
@@ -4594,7 +4594,7 @@ def main():
         controllers_as.append(PIDCtrl("PID", fixed_AS_cut, as_lo, as_hi))
 
     if "dqn" in BASELINES:
-        load_agent_bundle_into(dqn_as, Path("outputs/demo_sing_grpo_as_feature_all_MC/models_mc/AD/DQN.pt"), load_optim=False)
+        load_agent_bundle_into(dqn_as, Path(f"{args.models_dir}/AD/DQN.pt"), load_optim=False)
         controllers_as.append(DQNCtrl(
         "DQN", fixed_AS_cut, as_lo, as_hi,
         agent=dqn_as, deltas=AS_DELTAS, step=AS_STEP, max_delta=MAX_DELTA_AS,
@@ -4606,7 +4606,7 @@ def main():
             ))
     
     if "dqn_gamma_0" in BASELINES:
-        load_agent_bundle_into(dqn_as_gamma_0, Path("outputs/demo_sing_grpo_as_feature_all_MC/models_mc/HT/DQN_GAMMA_0.pt"), load_optim=False)
+        load_agent_bundle_into(dqn_as_gamma_0, Path(f"{args.models_dir}/HT/DQN_GAMMA_0.pt"), load_optim=False)
         controllers_as.append(DQNCtrl(
         "DQN_GAMMA_0", fixed_AS_cut, as_lo, as_hi,
         agent=dqn_as_gamma_0, deltas=AS_DELTAS, step=AS_STEP, max_delta=MAX_DELTA_AS,
@@ -4630,7 +4630,7 @@ def main():
         cfg=adt_cfg_as, seed=SEED + 101
         )
 
-        load_agent_bundle_into(agent_adt_as, Path("outputs/demo_sing_grpo_as_feature_all_MC/models_mc/AD/ADT.pt"), load_optim=False)
+        load_agent_bundle_into(agent_adt_as, Path(f"{args.models_dir}/AD/ADT.pt"), load_optim=False)
 
         controllers_as.append(ADTCtrl(
         name="ADT",
@@ -4651,7 +4651,7 @@ def main():
         ))
 
     if "grpo" in BASELINES:
-        load_agent_bundle_into(agent, Path("outputs/demo_sing_grpo_as_feature_all_MC/models_mc/AD/GRPO.pt"), load_optim=False)
+        load_agent_bundle_into(agent, Path(f"{args.models_dir}/AD/GRPO.pt"), load_optim=False)
         controllers_as.append(GRPOCtrl(
         "GRPO", fixed_AS_cut, as_lo, as_hi,
         agent=agent, deltas=AS_DELTAS, step=AS_STEP, max_delta=MAX_DELTA_AS,
@@ -4666,7 +4666,7 @@ def main():
     if "gfpo_f" in BASELINES: #GFPO feasible
         gfpo_f_as = GRPOAgent(seq_len=K, feat_dim=feat_dim_as, n_actions=len(AS_DELTAS), cfg=cfg, seed=SEED,
                         reward_cfg=agent.reward_cfg)
-        load_agent_bundle_into(gfpo_f_as, Path("outputs/demo_sing_grpo_as_feature_all_MC/models_mc/AD/GFPO-F.pt"), load_optim=False)
+        load_agent_bundle_into(gfpo_f_as, Path(f"{args.models_dir}/AD/GFPO-F.pt"), load_optim=False)
         controllers_as.append(GFPOCtrl(
         "GFPO-F", fixed_AS_cut, as_lo, as_hi,
         agent=GRPOAgent(seq_len=K, feat_dim=feat_dim_as, n_actions=len(AS_DELTAS), cfg=cfg, seed=SEED,
@@ -4709,7 +4709,7 @@ def main():
         ppo_agent_ad = SeqPPOAgent(
             cfg=ppo_cfg_as    
         )
-        load_agent_bundle_into(ppo_agent_ad, Path("outputs/demo_sing_grpo_as_feature_all_MC/models_mc/AD/PPO.pt"), load_optim=False)
+        load_agent_bundle_into(ppo_agent_ad, Path(f"{args.models_dir}/AD/PPO.pt"), load_optim=False)
         controllers_as.append(
         PPOCtrl(
                 "PPO",
@@ -4804,7 +4804,7 @@ def main():
             controllers_ht.append(PIDCtrlHT("PID", fixed_Ht_cut, ht_lo, ht_hi))
 
         if "dqn" in BASELINES:
-            load_agent_bundle_into(dqn_ht, Path("outputs/demo_sing_grpo_as_feature_all_MC/models_mc/HT/DQN.pt"), load_optim=False)
+            load_agent_bundle_into(dqn_ht, Path(f"{args.models_dir}/HT/DQN.pt"), load_optim=False)
             controllers_ht.append(DQNCtrlHT(
             "DQN", fixed_Ht_cut, ht_lo, ht_hi,
             agent=dqn_ht, deltas=HT_DELTAS, step=HT_STEP, max_delta=MAX_DELTA_HT,
@@ -4817,7 +4817,7 @@ def main():
             ))
         
         if "dqn_gamma_0" in BASELINES:
-            load_agent_bundle_into(dqn_ht_gamma_0, Path("outputs/demo_sing_grpo_as_feature_all_MC/models_mc/HT/DQN_GAMMA_0.pt"), load_optim=False)
+            load_agent_bundle_into(dqn_ht_gamma_0, Path(f"{args.models_dir}/HT/DQN_GAMMA_0.pt"), load_optim=False)
             controllers_ht.append(DQNCtrlHT(
             "DQN_GAMMA_0", fixed_Ht_cut, ht_lo, ht_hi,
             agent=dqn_ht_gamma_0, deltas=HT_DELTAS, step=HT_STEP, max_delta=MAX_DELTA_HT,
@@ -4841,7 +4841,7 @@ def main():
                 seq_len=K, feat_dim=feat_dim_ht, n_actions=len(HT_DELTAS),
                 cfg=adt_cfg_ht, seed=SEED + 202
             )
-            load_agent_bundle_into(agent_adt_ht, Path("outputs/demo_sing_grpo_as_feature_all_MC/models_mc/HT/ADT.pt"), load_optim=False)
+            load_agent_bundle_into(agent_adt_ht, Path(f"{args.models_dir}/HT/ADT.pt"), load_optim=False)
             controllers_ht.append(ADTCtrlHT(
             name="ADT",
             init_cut=fixed_Ht_cut, lo=ht_lo, hi=ht_hi,
@@ -4879,7 +4879,7 @@ def main():
                 w_occ=float(args.occ_pen)
                 )
             )
-            load_agent_bundle_into(agent_ht, Path("outputs/demo_sing_grpo_as_feature_all_MC/models_mc/HT/GRPO.pt"), load_optim=False)
+            load_agent_bundle_into(agent_ht, Path(f"{args.models_dir}/HT/GRPO.pt"), load_optim=False)
             controllers_ht.append(GRPOCtrlHT(
             "GRPO", fixed_Ht_cut, ht_lo, ht_hi,
             agent=agent_ht, deltas=HT_DELTAS, step=HT_STEP, max_delta=MAX_DELTA_HT,
@@ -4894,7 +4894,7 @@ def main():
             gfpo_f_ht = GRPOAgent(seq_len=K, feat_dim=feat_dim_ht, n_actions=len(HT_DELTAS), cfg=cfg, seed=SEED,
                         reward_cfg=agent.reward_cfg)
             
-            load_agent_bundle_into(gfpo_f_ht, Path("outputs/demo_sing_grpo_as_feature_all_MC/models_mc/HT/GFPO-F.pt"), load_optim=False)
+            load_agent_bundle_into(gfpo_f_ht, Path(f"{args.models_dir}/HT/GFPO-F.pt"), load_optim=False)
             controllers_ht.append(GFPOCtrlHT(
             "GFPO-F", fixed_Ht_cut, ht_lo, ht_hi,
             agent=gfpo_f_ht,
@@ -4912,7 +4912,7 @@ def main():
         if "gfpo_fr" in BASELINES:
             gfpo_fr_ht = GRPOAgent(seq_len=K, feat_dim=feat_dim_ht, n_actions=len(HT_DELTAS), cfg=cfg, seed=SEED,
                         reward_cfg=agent.reward_cfg)
-            load_agent_bundle_into(gfpo_fr_ht, Path("outputs/demo_sing_grpo_as_feature_all_MC/models_mc/HT/GFPO-FR.pt"), load_optim=False)
+            load_agent_bundle_into(gfpo_fr_ht, Path(f"{args.models_dir}/HT/GFPO-FR.pt"), load_optim=False)
             controllers_ht.append(GFPOCtrlHT(
             "GFPO-FR", fixed_Ht_cut, ht_lo, ht_hi,
             agent=gfpo_fr_ht,
@@ -4937,7 +4937,7 @@ def main():
             ppo_agent_ht = SeqPPOAgent(
                 cfg=ppo_cfg_ht
             )
-            load_agent_bundle_into(ppo_agent_ht, Path("outputs/demo_sing_grpo_as_feature_all_MC/models_mc/HT/PPO.pt"), load_optim=False)
+            load_agent_bundle_into(ppo_agent_ht, Path(f"{args.models_dir}/HT/PPO.pt"), load_optim=False)
             controllers_ht.append(PPOCtrlHT(
                 name="PPO",
                 init_cut=fixed_Ht_cut, lo=ht_lo, hi=ht_hi,
