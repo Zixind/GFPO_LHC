@@ -132,8 +132,17 @@ Adaptive-ParticlePhysics-Triggers/
 │   ├── mc_singletrigger.py
 │   ├── summary.py
 │   └── metrics.py
-│── RL/ # Running RL algorithms 
-│  
+│── RL/ # Running RL algorithms
+│
+├── firmware/                 # FPGA firmware export (StateEncoder → HLS C++ via hls4ml)
+│   ├── README.md
+│   ├── config.yaml
+│   ├── extract_weights.py
+│   ├── unroll_gru.py
+│   ├── unroll_rnn.py
+│   ├── convert_hls.py
+│   └── validate.py
+│
 ├── outputs/                  # Generated plots & results (create your own outputs folder to store the plots)
 ├── controllers.py                  
 ├── triggers.py                  
@@ -315,8 +324,92 @@ python RL/demo_single_trigger_grpo_as_feature_all_rollout.py \
 | `--control MC\|RealData` | Data source type for calibration logic |
 | `--outdir PATH` | Output directory for plots and logs |
 
-## Step 5 Generate Summary Plots
-### Summary of different agents’ Performance (default:MC)
+## Step 5 FPGA Firmware Export (StateEncoder → HLS C++)
+
+Export trained RL policy networks to synthesizable HLS C++ for Xilinx FPGAs via [hls4ml](https://fastmachinelearning.org/hls4ml/). The `firmware/` directory is fully self-contained and does **not** modify any files in `RL/`.
+
+**Architecture:** The `StateEncoder` (GRU + Linear head) is unrolled over K timesteps into explicit Dense-layer gate operations, producing an equivalent feedforward Keras model that hls4ml synthesizes natively.
+
+```
+PyTorch StateEncoder (.pt)  →  Unrolled Keras (Dense layers)  →  HLS C++ (Vivado)  →  FPGA bitstream
+```
+
+### 5a. Install hls4ml
+
+```bash
+conda run -n adaptive pip install hls4ml[profiling]
+```
+
+### 5b. Extract weights from trained checkpoint
+
+```bash
+python firmware/extract_weights.py \
+  --checkpoint outputs/best_mc/models_mc/model.pt \
+  --rnn-type gru \
+  --output-dir firmware/weights/
+```
+
+### 5c. Convert to HLS C++
+
+```bash
+python firmware/convert_hls.py \
+  --weights-dir firmware/weights/ \
+  --seq-len 10 \
+  --output-dir firmware/hls_output/ \
+  --precision "ap_fixed<16,6>" \
+  --reuse-factor 1 \
+  --clock-period 5 \
+  --fpga-part xcu250-figd2104-2L-e
+```
+
+### 5d. Validate numerical equivalence (PyTorch vs Keras)
+
+```bash
+python firmware/validate.py \
+  --checkpoint outputs/best_mc/models_mc/model.pt \
+  --weights-dir firmware/weights/ \
+  --seq-len 10 \
+  --rnn-type gru
+```
+
+### 5e. (Optional) Run Vivado C-synthesis for resource estimates
+
+Requires Xilinx Vivado HLS installed.
+
+```bash
+python firmware/convert_hls.py \
+  --weights-dir firmware/weights/ \
+  --seq-len 10 \
+  --output-dir firmware/hls_output/ \
+  --synth
+```
+
+### Key firmware arguments
+
+| Argument | Default | Description |
+|----------|---------|-------------|
+| `--rnn-type` | `gru` | RNN variant: `gru`, `rnn`, or `rnn_relu` |
+| `--seq-len` | `10` | Sequence length K (micro-steps per chunk) |
+| `--precision` | `ap_fixed<16,6>` | Fixed-point format (16-bit, 6 integer bits) |
+| `--reuse-factor` | `1` | 1 = fully parallel (min latency), higher = smaller FPGA footprint |
+| `--clock-period` | `5` | Target clock period in ns (5 ns = 200 MHz) |
+| `--fpga-part` | `xcu250-figd2104-2L-e` | Xilinx FPGA part (Alveo U250). Use `xcvu13p-flga2577-2-e` for CMS Phase-2 L1T |
+
+### Firmware file structure
+
+```
+firmware/
+├── README.md              # Detailed firmware documentation
+├── config.yaml            # Default FPGA/synthesis parameters
+├── extract_weights.py     # Step 1: PyTorch .pt → .npy weight files
+├── unroll_gru.py          # GRU unroll → Keras Dense layers
+├── unroll_rnn.py          # Simple RNN unroll → Keras Dense layers
+├── convert_hls.py         # Step 2: weights → Keras → hls4ml → HLS C++
+└── validate.py            # Step 3: numerical equivalence check
+```
+
+## Step 6 Generate Summary Plots
+### Summary of different agents’ performance (default: MC)
 
 ```
 python3 -m Control.summary --bkgType=MC --path Data/Trigger_food_MC.h5 \

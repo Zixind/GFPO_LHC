@@ -1,0 +1,22 @@
+# Default FPGA synthesis parameters for StateEncoder export.
+# Override any of these via command-line flags.
+
+# --- Model ---
+rnn_type: gru          # gru | rnn | rnn_relu
+seq_len: 10            # K micro-steps per chunk
+
+# --- hls4ml ---
+precision: "ap_fixed<16,6>"   # 16-bit fixed-point, 6 integer bits
+reuse_factor: 1               # 1 = fully parallel (lowest latency)
+io_type: io_parallel          # io_parallel | io_stream
+
+# --- Vivado HLS ---
+clock_period: 5               # ns (5 ns = 200 MHz)
+fpga_part: xcu250-figd2104-2L-e   # Xilinx Alveo U250
+
+# Alternative FPGA targets (uncomment to use):
+# fpga_part: xcvu13p-flga2577-2-e   # CMS Phase-2 L1T (VU13P)
+# fpga_part: xcvu9p-flga2104-2L-e   # Xilinx Alveo U200
+# fpga_part: xc7vx690tffg1761-2     # Xilinx Virtex-7 (CMS Phase-1)
+
+backend: Vivado       # Vivado | VivadoAccelerator | Quartus
