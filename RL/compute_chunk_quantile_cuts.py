@@ -106,11 +106,15 @@ def main():
         tt = np.asarray(d["Tht"], dtype=np.float64)
         aa = np.asarray(d["Aht"], dtype=np.float64)
 
-    n = len(d["Bas2"])
+    n = len(bg)
+    # If signal arrays have a different length from background (separate MC samples),
+    # evaluate signal efficiency on the full signal array for each chunk's oracle cut.
+    aligned = (len(tt) == len(bg)) and (len(aa) == len(bg))
     out_path = Path(args.out)
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
     print('len(bg), len(tt), len(aa)', len(bg), len(tt), len(aa))
+    print(f'signal aligned with background: {aligned}')
     cols = [
         "chunk","start","end","n_bg",
         "cut","bg_accept","bg_reject",
@@ -134,26 +138,29 @@ def main():
             end = min(end, n)
 
             bg_chunk = bg[start:end]
-            cut = choose_cut_for_bg_reject(bg_chunk, reject_frac=args.bg_reject_frac, bump_if_ties=args.bump_if_ties)
+            cut = choose_cut_for_bg_reject(bg_chunk, reject_frac=args.bg_reject_frac)
             bg_accept = float(np.mean(bg_chunk[np.isfinite(bg_chunk)] >= cut))
             bg_reject = 1.0 - bg_accept
 
-            tt_chunk = tt[start:end]
-            aa_chunk = aa[start:end]
+            # Use chunk-aligned signal when arrays are the same length (CMS Run),
+            # otherwise apply cut to the full signal array (separate MC samples).
+            if aligned:
+                tt_eval = tt[start:end]
+                aa_eval = aa[start:end]
+            else:
+                tt_eval = tt
+                aa_eval = aa
 
-            # tt_eff = eff_at_cut(tt_chunk, cut)
-            # aa_eff = eff_at_cut(aa_chunk, cut)
-            tt_eff = Sing_Trigger(tt_chunk, cut)
-            aa_eff = Sing_Trigger(aa_chunk, cut)
+            tt_eff = Sing_Trigger(tt_eval, cut)
+            aa_eff = Sing_Trigger(aa_eval, cut)
 
             if np.isfinite(tt_eff):
                 tt_eff_vals.append(tt_eff)
             if np.isfinite(aa_eff):
                 aa_eff_vals.append(aa_eff)
 
-            # print(np.mean(tt_chunk), np.mean(aa_eff))
-            tt_min = min_finite(tt_chunk)
-            aa_min = min_finite(aa_chunk)
+            tt_min = min_finite(tt_eval)
+            aa_min = min_finite(aa_eval)
 
             sig_eff_comb = float(np.mean([x for x in [tt_eff, aa_eff] if np.isfinite(x)]))
 
