@@ -4517,6 +4517,9 @@ def main():
             tt_ht_dqn = Sing_Trigger(sht_tt, Ht_cut_dqn)
             aa_ht_dqn = Sing_Trigger(sht_aa, Ht_cut_dqn)
 
+            h_ht, _ = np.histogram(bht, bins=ht_edges, density=True)
+            ht_hists.append(h_ht)
+            ht_stats.append(_score_chunk_stats(bht))
 
 
     # --- always dump the chunk table ---
@@ -4572,6 +4575,27 @@ def main():
         w=args.run_avg_window,
         )
 
+    # Score distribution plots (AD and HT)
+    time_score = np.linspace(0, 1, len(as_stats))
+    _plot_score_density_heatmap(
+        time=time_score, hists=np.array(as_hists), edges=as_edges,
+        title="AD score distribution across time chunks (background Bas)",
+        outpath=plots_dir / "score_density_AS_bg", run_label=run_label,
+    )
+    _plot_score_summary(
+        time=time_score, stats_list=as_stats,
+        title="AD score", outpath=plots_dir / "score_summary_AS_bg", run_label=run_label,
+    )
+    if args.run_ht:
+        _plot_score_density_heatmap(
+            time=time_score, hists=np.array(ht_hists), edges=ht_edges,
+            title=r"$H_T$ score distribution across time chunks (background Bht)",
+            outpath=plots_dir / "score_density_HT_bg", run_label=run_label,
+        )
+        _plot_score_summary(
+            time=time_score, stats_list=ht_stats,
+            title=r"$H_{T}$ score", outpath=plots_dir / "score_summary_HT_bg", run_label=run_label,
+        )
 
     paper_rows = build_paper_rows_from_chunk_rows(chunk_rows, target_pct=target, tol_pct=tol)
     write_paper_table(

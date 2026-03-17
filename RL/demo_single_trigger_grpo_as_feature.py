@@ -1215,7 +1215,6 @@ def main():
         tol=tol,
         mode="lex",        # "lex" default; "lag" if adaptive lambda
         mix=0.75, #increase for tt
-        alpha_sig=1.0,
         beta_move=0.02,
         gamma_stab=0.25,
         k_violate=5.0,
@@ -1254,7 +1253,6 @@ def main():
         tol=tol,
         mode="lex",        # "lex" default; "lag" if adaptive lambda
         mix=0.75, #increase for tt
-        alpha_sig=1.0,
         beta_move=0.02,
         gamma_stab=0.25,
         k_violate=5.0,
@@ -1345,7 +1343,6 @@ def main():
                 tol=tol,
                 mode="lex",        # "lex" recommended
                 mix=0.75,
-                alpha_sig=1.0,
                 beta_move=0.02,
                 gamma_stab=0.25,
                 k_violate=5.0,
@@ -1366,7 +1363,6 @@ def main():
                 tol=tol,
                 mode="lex",        # "lex" recommended
                 mix=0.75,
-                alpha_sig=1.0,
                 beta_move=0.02,
                 gamma_stab=0.25,
                 k_violate=5.0,
@@ -2812,7 +2808,7 @@ def main():
         _plot_score_summary(
         time=time,
         stats_list=ht_stats,
-        title="HT score",
+        title="$H_{T}$ score",
         outpath=plots_dir / "score_summary_HT_bg",
         run_label=run_label,
         )
