@@ -37,28 +37,16 @@ from triggers import Sing_Trigger
   """
 
 # ---- compute_chunk_quantile_cuts.py ----
-def choose_cut_for_bg_reject(bg_scores: np.ndarray, *, reject_frac: float, bump_if_ties: bool) -> float:
+def choose_cut_for_bg_reject(bg_scores: np.ndarray, *, reject_frac: float, bump_if_ties: bool = False) -> float:
+    """Set cut so that exactly round(n * (1 - reject_frac)) background events pass."""
     bg = np.asarray(bg_scores, dtype=np.float64)
     bg = bg[np.isfinite(bg)]
     if bg.size == 0:
         return np.nan
-    reject_frac = float(reject_frac)
-    try:
-        cut = float(np.quantile(bg, reject_frac, method="higher"))
-    except TypeError:
-        cut = float(np.quantile(bg, reject_frac, interpolation="higher"))
-
-    if not bump_if_ties:
-        return cut
-
-    target_accept = 1.0 - reject_frac
-    bg_accept = float(np.mean(bg >= cut))
-    if bg_accept <= target_accept + 1e-12:
-        return cut
-
-    uniq = np.unique(bg)
-    j = np.searchsorted(uniq, cut, side="right")
-    return float(uniq[j]) if j < uniq.size else cut
+    target_accept = 1.0 - float(reject_frac)
+    k = max(1, int(np.round(bg.size * target_accept)))
+    sorted_bg = np.sort(bg)
+    return float(sorted_bg[-k])
 
 def eff_at_cut(scores: np.ndarray, cut: float) -> float:
     x = np.asarray(scores, dtype=np.float64)
