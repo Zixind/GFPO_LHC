@@ -221,9 +221,6 @@ ax_roc.set_title("(c) ROC at operating point", fontsize=LABEL_FS)
 ax_roc.tick_params(axis="both", labelsize=TICK_FS)
 ax_roc.legend(fontsize=LEGEND_FS, loc="lower right", framealpha=0.8, ncol=2)
 
-hep.cms.label("Preliminary", data=True, lumi=None, ax=ax_ht,  fontsize=LEGEND_FS)
-hep.cms.label("Preliminary", data=True, lumi=None, ax=ax_as,  fontsize=LEGEND_FS)
-hep.cms.label("Preliminary", data=True, lumi=None, ax=ax_roc, fontsize=LEGEND_FS)
 
 OUT.parent.mkdir(parents=True, exist_ok=True)
 for ext in ("pdf", "png"):
