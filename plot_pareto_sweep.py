@@ -26,6 +26,12 @@ METHOD_MARKERS = {
     "PPO": "D", "ADT": "P", "GRPO": "*", "GFPO-F": "X", "GFPO-FR": "h",
 }
 
+# Per-marker size adjustments so all symbols look visually equal
+METHOD_SIZES = {
+    "Constant": 220, "PID": 220, "DQN": 220, "DQN-F": 220,
+    "PPO": 200, "ADT": 400, "GRPO": 480, "GFPO-F": 250, "GFPO-FR": 250,
+}
+
 METHOD_COLORS = {
     "Constant": "tab:gray", "PID": "tab:blue", "DQN": "tab:orange", "DQN-F": "tab:brown",
     "PPO": "tab:green", "ADT": "tab:red", "GRPO": "tab:purple",
@@ -124,8 +130,9 @@ def plot_one(rows, trigger, sig_key, sig_label, outpath):
         color = METHOD_COLORS.get(method, "black")
         marker = METHOD_MARKERS.get(method, "o")
 
-        ax.scatter(inband, sig, c=color, marker=marker, s=80,
-                   edgecolors="k", linewidths=0.3, zorder=3, label=method, alpha=0.85)
+        msize = METHOD_SIZES.get(method, 160)
+        ax.scatter(inband, sig, c=color, marker=marker, s=msize,
+                   edgecolors="k", linewidths=0.5, zorder=3, label=method, alpha=0.85)
 
         # Annotate with (lambda_1, lambda_2)
         for i in range(len(inband)):
@@ -146,12 +153,12 @@ def plot_one(rows, trigger, sig_key, sig_label, outpath):
             if len(xh) >= 2:
                 ax.plot(xh, yh, "-", color=color, linewidth=1.5, alpha=0.7, zorder=2)
 
-    ax.set_xlabel("InBand Rate", fontsize=26)
-    ax.set_ylabel("Overall Signal Efficiency", fontsize=26)
+    ax.set_xlabel("InBand Rate", fontsize=32)
+    ax.set_ylabel("Overall Signal Efficiency", fontsize=32)
     # No title — keep plots clean for paper
     ax.legend(fontsize=22, ncol=3, loc="best", framealpha=0.8)
     ax.grid(True, alpha=0.3)
-    ax.tick_params(labelsize=18)
+    ax.tick_params(labelsize=28)
 
     fig.tight_layout()
     fig.savefig(f"{outpath}.png", dpi=300, bbox_inches="tight")
