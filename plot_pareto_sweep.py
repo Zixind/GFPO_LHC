@@ -86,6 +86,31 @@ def extract_method_data(rows, trigger, method):
             np.asarray(l1), np.asarray(l3))
 
 
+def _concave_hull_upper(x, y):
+    """Return indices of the upper concave hull of sorted (x, y) points.
+
+    Keeps the leftmost and rightmost points, plus any interior points that
+    lie above or on the line connecting their neighbours — giving a concave-
+    down envelope.
+    """
+    n = len(x)
+    if n <= 2:
+        return list(range(n))
+    # Andrew's upper hull (points sorted by x already)
+    hull = []
+    for i in range(n):
+        while len(hull) >= 2:
+            # cross product: turn left => concave (keep), turn right => convex (remove)
+            o, a, b = hull[-2], hull[-1], i
+            cross = (x[a] - x[o]) * (y[b] - y[o]) - (y[a] - y[o]) * (x[b] - x[o])
+            if cross >= 0:  # right turn or collinear — remove middle point
+                hull.pop()
+            else:
+                break
+        hull.append(i)
+    return hull
+
+
 def plot_one(rows, trigger, sig_key, sig_label, outpath):
     """One standalone plot for a given (trigger, signal)."""
     fig, ax = plt.subplots(figsize=(12, 9))
@@ -109,12 +134,17 @@ def plot_one(rows, trigger, sig_key, sig_label, outpath):
                         textcoords="offset points", xytext=(4, 4),
                         fontsize=6, alpha=0.55, color=color)
 
-        # Pareto frontier for this method
-        pidx = pareto_front(inband, sig)
-        if len(pidx) > 1:
-            order = np.argsort(inband[pidx])
-            pidx = pidx[order]
-            ax.plot(inband[pidx], sig[pidx], "--", color=color, linewidth=1.5, alpha=0.7, zorder=2)
+        # Concave envelope connecting all points for this method
+        if len(inband) > 1:
+            order = np.argsort(inband)
+            x_sorted = inband[order]
+            y_sorted = sig[order]
+            # Build upper concave hull (points on or above the line between neighbours)
+            hull_idx = _concave_hull_upper(x_sorted, y_sorted)
+            xh = x_sorted[hull_idx]
+            yh = y_sorted[hull_idx]
+            if len(xh) >= 2:
+                ax.plot(xh, yh, "-", color=color, linewidth=1.5, alpha=0.7, zorder=2)
 
     ax.set_xlabel("InBand Rate", fontsize=26)
     ax.set_ylabel("Overall Signal Efficiency", fontsize=26)
@@ -134,16 +164,21 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--entity", default="zixin911")
     ap.add_argument("--project", default="Adaptive-ParticlePhysics-Triggers-RL")
-    ap.add_argument("--sweep-id", required=True)
+    ap.add_argument("--sweep-id", required=True, nargs="+",
+                        help="One or more sweep IDs (data merged across sweeps)")
     ap.add_argument("--outdir", default="outputs/pareto_sweep")
     args = ap.parse_args()
 
     from pathlib import Path
     Path(args.outdir).mkdir(parents=True, exist_ok=True)
 
-    print(f"Fetching sweep {args.sweep_id} ...")
-    rows = fetch_sweep_data(args.entity, args.project, args.sweep_id)
-    print(f"  Found {len(rows)} finished runs")
+    rows = []
+    for sid in args.sweep_id:
+        print(f"Fetching sweep {sid} ...")
+        r = fetch_sweep_data(args.entity, args.project, sid)
+        print(f"  Found {len(r)} finished runs")
+        rows.extend(r)
+    print(f"  Total: {len(rows)} finished runs")
 
     if not rows:
         print("No finished runs found. Wait for the sweep to complete.")
