@@ -32,6 +32,8 @@ from dataclasses import dataclass
 import random
 import argparse
 from collections import deque
+import sys, os
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 import numpy as np
 import matplotlib.pyplot as plt
 import h5py
@@ -189,8 +191,8 @@ def write_paper_table(rows, out_csv: Path, out_tex: Path, target_pct, tol_pct):
     lines.append(r"\end{tabular}")
     lines.append(
         rf"\caption{{Summary of single-trigger control. Rates are in percent units with target "
-        rf"$r^*={target_pct:.3f}\%$ and tolerance $\pm {tol_pct:.3f}\%$. "
-        rf"InBand is the fraction of chunks within $|r-r^*|\le\tau$. "
+        rf"$r_B^*={target_pct:.3f}\%$ and tolerance $\pm {tol_pct:.3f}\%$. "
+        rf"InBand is the fraction of chunks within $|r-r_B^*|\le\tau$. "
         rf"UpFrac and DownFrac measure upward/downward band violations. "
         rf"$t\bar t$ and $h\rightarrow 4b$ are mean signal efficiencies conditioned on in-band chunks.}}"
     )
@@ -243,7 +245,14 @@ def main():
                     help="Train DQN-F only on the first N chunks, then freeze weights and rollout.")
     ap.add_argument("--dqn-f-eps", type=float, default=0.0,
                     help="Epsilon used for DQN-F rollout AFTER freezing (default: greedy).")
-    
+    # --- Reward hyperparameters ---
+    ap.add_argument("--alpha", type=float, default=0.2,
+                    help="Signal mix: alpha*ttbar + (1-alpha)*h4b (lower = more h4b focus).")
+    ap.add_argument("--beta", type=float, default=0.2,
+                    help="Move penalty weight.")
+    ap.add_argument("--lambda_1", type=float, default=0.15,
+                    help="Rate tracking weight (1-lambda_1 = signal weight).")
+
     args = ap.parse_args()
     if args.control == "MC":
         run_label = "MC"
@@ -329,8 +338,9 @@ def main():
     # ------------------------- DQN configs -------------------------
     target = 0.25  # %
     tol = 0.025     # background - target/tolerance for reward?
-    alpha = 0.4    # signal bonus
-    beta  = 0.2   # move penalty
+    alpha = args.alpha    # signal bonus
+    beta  = args.beta    # move penalty
+    lambda_1 = args.lambda_1  # rate tracking weight
 
     HT_DELTAS = np.array([float(x) for x in args.ht_deltas.split(",")], dtype=np.float32)
     HT_STEP = 1.0
@@ -559,6 +569,7 @@ def main():
                 beta=beta,
                 prev_bg_rate=bg_before_ht,
                 gamma_stab=0.3,
+                lambda_1=lambda_1,
             )
 
             agent_ht.buf.push(obs_ht, act_ht, r_ht, obs_ht_next, done=False)
@@ -633,6 +644,7 @@ def main():
                 beta=beta,
                 prev_bg_rate=bg_before_as,
                 gamma_stab=0.3,
+                lambda_1=lambda_1,
             )
 
             agent_as.buf.push(obs_as, act_as, r_as, obs_as_next, done=False)
@@ -708,6 +720,7 @@ def main():
                 beta=beta,
                 prev_bg_rate=bg_before_ht_f,
                 gamma_stab=0.3,
+                lambda_1=lambda_1,
             )
 
             if train_f:
@@ -782,6 +795,7 @@ def main():
                 beta=beta,
                 prev_bg_rate=bg_before_as_f,
                 gamma_stab=0.3,
+                lambda_1=lambda_1,
             )
 
             if train_f:
@@ -904,6 +918,7 @@ def main():
                 beta=beta,
                 prev_bg_rate=bg_before_ht_cf,   # stability term is meaningful here
                 gamma_stab=0.3,
+                lambda_1=lambda_1,
             )
 
         cf_r_ht.append(cf_ht)
@@ -932,6 +947,7 @@ def main():
                 beta=beta,
                 prev_bg_rate=bg_before_as_cf,
                 gamma_stab=0.3,
+                lambda_1=lambda_1,
             )
 
         cf_r_as.append(cf_as)
@@ -1318,28 +1334,28 @@ def main():
     colors_ht = {"ttbar": "goldenrod", "HToAATo4B": "seagreen"}
     fig, ax = plt.subplots(figsize=(10, 6))
     ax.plot(time, rel_to_t0(tt_c_const), color=colors_ht["ttbar"], **styles["Constant"],
-            label=fr"Constant Menu, ttbar ($\epsilon[t_0]={tt_c_const[0]:.2f}\%$)")
+            label=r"Constant Menu, $t\bar{t}$")
     ax.plot(time, rel_to_t0(aa_c_const), color=colors_ht["HToAATo4B"], **styles["Constant"],
-            label=fr"Constant Menu, HToAATo4B ($\epsilon[t_0]={aa_c_const[0]:.2f}\%$)")
+            label=r"Constant Menu, $h\to4b$")
     ax.plot(time, rel_to_t0(tt_c_pd), color=colors_ht["ttbar"], **styles["PID"],
-            label=fr"PID Controller, ttbar ($\epsilon[t_0]={tt_c_pd[0]:.2f}\%$)")
+            label=r"PID Controller, $t\bar{t}$")
     ax.plot(time, rel_to_t0(aa_c_pd), color=colors_ht["HToAATo4B"], **styles["PID"],
-            label=fr"PID Controller, HToAATo4B ($\epsilon[t_0]={aa_c_pd[0]:.2f}\%$)")
+            label=r"PID Controller, $h\to4b$")
     ax.plot(time, rel_to_t0(tt_c_dqn), color=colors_ht["ttbar"],
-            label=fr"DQN, ttbar ($\epsilon[t_0]={tt_c_dqn[0]:.2f}\%$)", **DQN_STYLE)
+            label=r"DQN, $t\bar{t}$", **DQN_STYLE)
     ax.plot(time, rel_to_t0(aa_c_dqn), color=colors_ht["HToAATo4B"],
-            label=fr"DQN, HToAATo4B ($\epsilon[t_0]={aa_c_dqn[0]:.2f}\%$)", **DQN_STYLE)
+            label=r"DQN, $h\to4b$", **DQN_STYLE)
     ax.plot(time, rel_to_t0(tt_c_dqnf), color=colors_ht["ttbar"],
-        label=fr"DQN-F, ttbar ($\epsilon[t_0]={tt_c_dqnf[0]:.2f}\%$)", **DQNF_SIG_STYLE)
+        label=r"DQN-F, $t\bar{t}$", **DQNF_SIG_STYLE)
     ax.plot(time, rel_to_t0(aa_c_dqnf), color=colors_ht["HToAATo4B"],
-        label=fr"DQN-F, HToAATo4B ($\epsilon[t_0]={aa_c_dqnf[0]:.2f}\%$)", **DQNF_SIG_STYLE)
+        label=r"DQN-F, $h\to4b$", **DQNF_SIG_STYLE)
 
 
     ax.grid(True, linestyle="--", alpha=0.6)
     ax.set_ylim(0.5, 2.5)
     # ax.legend(title="HT Trigger", fontsize=14, frameon=True, loc="best")
     style_diag_axes(ax, "Time (Fraction of Run)", "Relative Cumulative Efficiency", ylim=(0.5, 2.5))
-    style_diag_legend(ax, title="HT Trigger")
+    style_diag_legend(ax, title=r"$H_T$ Trigger")
     finalize_diag_fig(fig)
     add_cms_header(fig, run_label=run_label)
     save_png(fig, str(outdir / "sht_rate_pidData2data_dqn"))
@@ -1348,28 +1364,28 @@ def main():
     # (4) HT local eff (relative to t0)
     fig, ax = plt.subplots(figsize=(10, 6))
     ax.plot(time, rel_to_t0(L_tt_ht_const), color=colors_ht["ttbar"], **styles["Constant"],
-            label=fr"Constant Menu, ttbar ($\epsilon[t_0]={L_tt_ht_const[0]:.2f}\%$)")
+            label=r"Constant Menu, $t\bar{t}$")
     ax.plot(time, rel_to_t0(L_aa_ht_const), color=colors_ht["HToAATo4B"], **styles["Constant"],
-            label=fr"Constant Menu, HToAATo4B ($\epsilon[t_0]={L_aa_ht_const[0]:.2f}\%$)")
+            label=r"Constant Menu, $h\to4b$")
     ax.plot(time, rel_to_t0(L_tt_ht_pd), color=colors_ht["ttbar"], **styles["PID"],
-            label=fr"PID Controller, ttbar ($\epsilon[t_0]={L_tt_ht_pd[0]:.2f}\%$)")
+            label=r"PID Controller, $t\bar{t}$")
     ax.plot(time, rel_to_t0(L_aa_ht_pd), color=colors_ht["HToAATo4B"], **styles["PID"],
-            label=fr"PID Controller, HToAATo4B ($\epsilon[t_0]={L_aa_ht_pd[0]:.2f}\%$)")
-    ax.plot(time, rel_to_t0(L_tt_ht_dqn), color=colors_ht["ttbar"], 
-            label=fr"DQN, ttbar ($\epsilon[t_0]={L_tt_ht_dqn[0]:.2f}\%$)", **DQN_STYLE)
-    ax.plot(time, rel_to_t0(L_aa_ht_dqn), color=colors_ht["HToAATo4B"], 
-            label=fr"DQN, HToAATo4B ($\epsilon[t_0]={L_aa_ht_dqn[0]:.2f}\%$)", **DQN_STYLE)
+            label=r"PID Controller, $h\to4b$")
+    ax.plot(time, rel_to_t0(L_tt_ht_dqn), color=colors_ht["ttbar"],
+            label=r"DQN, $t\bar{t}$", **DQN_STYLE)
+    ax.plot(time, rel_to_t0(L_aa_ht_dqn), color=colors_ht["HToAATo4B"],
+            label=r"DQN, $h\to4b$", **DQN_STYLE)
     ax.plot(time, rel_to_t0(L_tt_ht_dqnf), color=colors_ht["ttbar"],
-        label=fr"DQN-F, ttbar ($\epsilon[t_0]={L_tt_ht_dqnf[0]:.2f}\%$)", **DQNF_SIG_STYLE)
+        label=r"DQN-F, $t\bar{t}$", **DQNF_SIG_STYLE)
     ax.plot(time, rel_to_t0(L_aa_ht_dqnf), color=colors_ht["HToAATo4B"],
-        label=fr"DQN-F, HToAATo4B ($\epsilon[t_0]={L_aa_ht_dqnf[0]:.2f}\%$)", **DQNF_SIG_STYLE)
+        label=r"DQN-F, $h\to4b$", **DQNF_SIG_STYLE)
 
 
     ax.grid(True, linestyle="--", alpha=0.6)
 
     # leg = ax.legend(title="HT Trigger", fontsize=LEGEND_FS, frameon=True, loc="best")
     style_diag_axes(ax, "Time (Fraction of Run)", "Relative Efficiency", ylim=(0.5, 2.5))
-    style_diag_legend(ax, title="HT Trigger")
+    style_diag_legend(ax, title=r"$H_T$ Trigger")
     finalize_diag_fig(fig)
     # leg.get_title().set_fontsize(LEGEND_TITLE_FS)
 
@@ -1492,26 +1508,26 @@ def main():
 
     fig, ax = plt.subplots(figsize=(10, 6))
     ax.plot(time_as, rel_to_t0(tt_c_const), color=colors_ad["ttbar"], **styles["Constant"],
-            label=fr"Constant Menu, ttbar ($\epsilon[t_0]={tt_c_const[0]:.2f}\%$)")
+            label=r"Constant Menu, $t\bar{t}$")
     ax.plot(time_as, rel_to_t0(aa_c_const), color=colors_ad["HToAATo4B"], **styles["Constant"],
-            label=fr"Constant Menu, HToAATo4B ($\epsilon[t_0]={aa_c_const[0]:.2f}\%$)")
+            label=r"Constant Menu, $h\to4b$")
     ax.plot(time_as, rel_to_t0(tt_c_pd), color=colors_ad["ttbar"], **styles["PID"],
-            label=fr"PID Controller, ttbar ($\epsilon[t_0]={tt_c_pd[0]:.2f}\%$)")
+            label=r"PID Controller, $t\bar{t}$")
     ax.plot(time_as, rel_to_t0(aa_c_pd), color=colors_ad["HToAATo4B"], **styles["PID"],
-            label=fr"PID Controller, HToAATo4B ($\epsilon[t_0]={aa_c_pd[0]:.2f}\%$)")
+            label=r"PID Controller, $h\to4b$")
     ax.plot(time_as, rel_to_t0(tt_c_dqn), color=colors_ad["ttbar"],
-            label=fr"DQN, ttbar ($\epsilon[t_0]={tt_c_dqn[0]:.2f}\%$)", **DQN_STYLE)
-    ax.plot(time_as, rel_to_t0(aa_c_dqn), color=colors_ad["HToAATo4B"], 
-            label=fr"DQN, HToAATo4B ($\epsilon[t_0]={aa_c_dqn[0]:.2f}\%$)", **DQN_STYLE)
+            label=r"DQN, $t\bar{t}$", **DQN_STYLE)
+    ax.plot(time_as, rel_to_t0(aa_c_dqn), color=colors_ad["HToAATo4B"],
+            label=r"DQN, $h\to4b$", **DQN_STYLE)
     ax.plot(time_as, rel_to_t0(tt_c_dqnf), color=colors_ad["ttbar"],
-        label=fr"DQN-F, ttbar ($\epsilon[t_0]={tt_c_dqnf[0]:.2f}\%$)", **DQNF_STYLE)
+        label=r"DQN-F, $t\bar{t}$", **DQNF_STYLE)
     ax.plot(time_as, rel_to_t0(aa_c_dqnf), color=colors_ad["HToAATo4B"],
-        label=fr"DQN-F, HToAATo4B ($\epsilon[t_0]={aa_c_dqnf[0]:.2f}\%$)", **DQNF_STYLE)
+        label=r"DQN-F, $h\to4b$", **DQNF_STYLE)
 
     ax.grid(True, linestyle="--", alpha=0.6)
-    ax.set_ylim(0.5, 2.5)
+    ax.set_ylim(0.5, 3.0)
     # leg=ax.legend(title="AD Trigger", fontsize=14, frameon=True, loc="best")
-    style_diag_axes(ax, "Time (Fraction of Run)", "Relative Cumulative Efficiency", ylim=(0.5, 2.5))
+    style_diag_axes(ax, "Time (Fraction of Run)", "Relative Cumulative Efficiency", ylim=(0.5, 3.0))
     style_diag_legend(ax, title="AD Trigger")
     finalize_diag_fig(fig)
     # leg.get_title().set_fontsize(LEGEND_TITLE_FS)
@@ -1522,26 +1538,26 @@ def main():
     # (A4) AD local eff (relative to t0)
     fig, ax = plt.subplots(figsize=(10, 6))
     ax.plot(time_as, rel_to_t0(L_tt_as_const), color=colors_ad["ttbar"], **styles["Constant"],
-            label=fr"Constant Menu, ttbar ($\epsilon[t_0]={L_tt_as_const[0]:.2f}\%$)")
+            label=r"Constant Menu, $t\bar{t}$")
     ax.plot(time_as, rel_to_t0(L_aa_as_const), color=colors_ad["HToAATo4B"], **styles["Constant"],
-            label=fr"Constant Menu, HToAATo4B ($\epsilon[t_0]={L_aa_as_const[0]:.2f}\%$)")
+            label=r"Constant Menu, $h\to4b$")
     ax.plot(time_as, rel_to_t0(L_tt_as_pd), color=colors_ad["ttbar"], **styles["PID"],
-            label=fr"PID Controller, ttbar ($\epsilon[t_0]={L_tt_as_pd[0]:.2f}\%$)")
+            label=r"PID Controller, $t\bar{t}$")
     ax.plot(time_as, rel_to_t0(L_aa_as_pd), color=colors_ad["HToAATo4B"], **styles["PID"],
-            label=fr"PID Controller, HToAATo4B ($\epsilon[t_0]={L_aa_as_pd[0]:.2f}\%$)")
+            label=r"PID Controller, $h\to4b$")
     ax.plot(time_as, rel_to_t0(L_tt_as_dqn), color=colors_ad["ttbar"], linewidth=2.2, linestyle="dashdot",
-            label=fr"DQN, ttbar ($\epsilon[t_0]={L_tt_as_dqn[0]:.2f}\%$)")
+            label=r"DQN, $t\bar{t}$")
     ax.plot(time_as, rel_to_t0(L_aa_as_dqn), color=colors_ad["HToAATo4B"], linewidth=2.2, linestyle="dashdot",
-            label=fr"DQN, HToAATo4B ($\epsilon[t_0]={L_aa_as_dqn[0]:.2f}\%$)")
+            label=r"DQN, $h\to4b$")
     ax.plot(time_as, rel_to_t0(L_tt_as_dqnf), color=colors_ad["ttbar"],
-        label=fr"DQN-F, ttbar ($\epsilon[t_0]={L_tt_as_dqnf[0]:.2f}\%$)", **DQNF_SIG_STYLE)
+        label=r"DQN-F, $t\bar{t}$", **DQNF_SIG_STYLE)
     ax.plot(time_as, rel_to_t0(L_aa_as_dqnf), color=colors_ad["HToAATo4B"],
-        label=fr"DQN-F, HToAATo4B ($\epsilon[t_0]={L_aa_as_dqnf[0]:.2f}\%$)", **DQNF_SIG_STYLE)
+        label=r"DQN-F, $h\to4b$", **DQNF_SIG_STYLE)
 
 
     ax.grid(True, linestyle="--", alpha=0.6)
     # ax.legend(title="AD Trigger", fontsize=14, frameon=True, loc="best")
-    style_diag_axes(ax, "Time (Fraction of Run)", "Relative Efficiency", ylim=(0.5, 2.5))
+    style_diag_axes(ax, "Time (Fraction of Run)", "Relative Efficiency", ylim=(0.5, 3.5))
     style_diag_legend(ax, title="AD Trigger")
     finalize_diag_fig(fig)
     add_cms_header(fig, run_label=run_label)
@@ -1688,7 +1704,7 @@ def main():
         ax.plot(x1, y1, linewidth=2.2, label="PID")
         ax.plot(x2, y2, linewidth=2.2, label="DQN")
         ax.axvline(TOL_KHZ, linestyle="--", linewidth=1.6, label=f"Tolerance = {TOL_KHZ:.1f} kHz")
-        ax.set_xlabel(r"$|r - r^*|$  [kHz]")
+        ax.set_xlabel(r"$|r - r_B^*|$  [kHz]")
         ax.set_ylabel("CDF")
         ax.set_title(title)
         ax.grid(True, linestyle="--", alpha=0.5)

@@ -90,7 +90,7 @@ fig, axes = plt.subplots(1, 2, figsize=(16, 5))
 ax = axes[0]
 ax.plot(t_frac, sens_ht, lw=0.5, color="C3")
 ax.axhline(0, ls=":", color="grey")
-ax.set_ylabel(r"$\boldsymbol{\frac{\partial\,r / \partial\,c}{r^*}}$")
+ax.set_ylabel(r"$\boldsymbol{\frac{\partial\,r / \partial\,c}{r_{B}^{*}}}$")
 ax.set_xlabel("Time (Fraction of Run)")
 ax.set_title(r"$H_T$ sensitivity probe over time")
 
@@ -98,7 +98,7 @@ ax.set_title(r"$H_T$ sensitivity probe over time")
 ax = axes[1]
 ax.plot(t_frac, sens_as, lw=0.5, color="C0")
 ax.axhline(0, ls=":", color="grey")
-ax.set_ylabel(r"$\boldsymbol{\frac{\partial\,r / \partial\,c}{r^*}}$")
+ax.set_ylabel(r"$\boldsymbol{\frac{\partial\,r / \partial\,c}{r_{B}^{*}}}$")
 ax.set_xlabel("Time (Fraction of Run)")
 ax.set_title("AD sensitivity probe over time")
 

@@ -8,6 +8,8 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 
+from RL.state_encoder import SeqActorCriticEncoder
+
 @dataclass
 class SeqPPOConfig:
     feat_dim: int          # F
@@ -29,34 +31,27 @@ class SeqPPOConfig:
     adv_norm: bool = True
     device: str = "cpu"
 
-    # match SeqDQN default hidden=64 (your SeqQNet uses hidden=64)
-    hidden: int = 64
+    # unified hidden size (matched across all agents)
+    hidden: int = 32
+
+    # RNN type for state encoder (gru, lstm, rnn, rnn_relu)
+    rnn_type: str = "gru"
 
 
-class SeqActorCritic(nn.Module):
+class SeqActorCritic(SeqActorCriticEncoder):
     """
     Input:  x (B, K, F)
     Output: logits (B, A), value (B,)
-    """
-    def __init__(self, feat_dim: int, n_actions: int, hidden: int = 64):
-        super().__init__()
-        self.gru = nn.GRU(input_size=feat_dim, hidden_size=hidden, batch_first=True)
-        self.pi = nn.Sequential(
-            nn.Linear(hidden, 64), nn.Tanh(),
-            nn.Linear(64, n_actions),
-        )
-        self.v = nn.Sequential(
-            nn.Linear(hidden, 64), nn.Tanh(),
-            nn.Linear(64, 1),
-        )
 
-    def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
-        # x: (B,K,F)
-        _, h = self.gru(x)          # h: (1,B,H)
-        h = h[-1]                   # (B,H)
-        logits = self.pi(h)         # (B,A)
-        value = self.v(h).squeeze(-1)  # (B,)
-        return logits, value
+    Uses unified StateEncoder (RNN + Linear heads).
+    Default: GRU + Linear (FPGA-friendly).
+    """
+    def __init__(self, feat_dim: int, n_actions: int, hidden: int = 32,
+                 rnn_type: str = "gru", num_layers: int = 1):
+        super().__init__(
+            feat_dim=feat_dim, n_actions=n_actions, hidden=hidden,
+            rnn_type=rnn_type, num_layers=num_layers,
+        )
 
 
 class PPOBufferSeq:
@@ -93,7 +88,10 @@ class SeqPPOAgent:
         self.cfg = cfg
         self.device = torch.device(cfg.device)
 
-        self.ac = SeqActorCritic(cfg.feat_dim, cfg.n_actions, hidden=cfg.hidden).to(self.device)
+        self.ac = SeqActorCritic(
+            cfg.feat_dim, cfg.n_actions, hidden=cfg.hidden,
+            rnn_type=getattr(cfg, 'rnn_type', 'gru'),
+        ).to(self.device)
         self.opt = torch.optim.Adam(self.ac.parameters(), lr=cfg.lr)
         self.buf = PPOBufferSeq()
 

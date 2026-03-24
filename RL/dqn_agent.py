@@ -492,15 +492,14 @@ def compute_reward(
     # normalized error
     e = (float(bg_rate) - float(target)) / tol #rate tracking
     ae = abs(e)
-    track = ae # rate tracking
 
-    # # Rate Tracking: reward being within tolerance, penalize being outside
-    # if ae <= 1.0:
-    #     # max +1 at center; smoothly decreases to 0 at band edge
-    #     track = 1.0 - ae**2
-    # else:
-    #     # linear penalty outside band, continuous at ae=1
-    #     track = - (ae - 1.0)
+    # Rate Tracking: reward being within tolerance, penalize being outside
+    if ae <= 1.0:
+        # max +1 at center; smoothly decreases to 0 at band edge
+        track = 1.0 - ae**2
+    else:
+        # linear penalty outside band, continuous at ae=1
+        track = - (ae - 1.0)
 
 
     # bg_pen = abs(float(bg_rate) - float(target)) / tol
