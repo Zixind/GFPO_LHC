@@ -1,3 +1,6 @@
+import sys, os
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -141,6 +144,9 @@ from RL.dqn_agent import SeqDQNAgent, DQNConfig  # DQN agent
 # from RL.dqn_agent import make_event_seq_as_v0, make_event_seq_ht_v0
 from RL.dqn_agent import make_event_seq_as, make_event_seq_ht, shield_delta
 from RL.ppo_agent import SeqPPOAgent, SeqPPOConfig
+from RL.sac_agent import SeqSACAgent, SACConfig
+from RL.spot_ctrl import SPOTCtrl, SPOTCtrlHT
+from RL.anomaly_transformer_ctrl import AnomalyTransformerCtrl, AnomalyTransformerCtrlHT
 
 SEED = 20251221
 random.seed(SEED)
@@ -1206,6 +1212,205 @@ class PPOCtrlHT(BaseCtrl):
         self.agent.finish_path(last_value=float(last_v))
         _ = self.agent.update()
         self._last_obs_next = None
+
+
+class SACCtrl(BaseCtrl):
+    """
+    Discrete SAC controller for AD/AS cut.
+    Off-policy: pushes (s, a, r, s') to replay buffer and trains each micro-step.
+    """
+    def __init__(self, name, init_cut, lo, hi, *, agent, deltas, step, max_delta,
+                 as_mid, as_span, near_widths, K, target, tol, alpha, beta,
+                 train_steps_per_micro: int = 1, train: bool = True):
+        self.name = name
+        self.cut = float(init_cut)
+        self.lo, self.hi = float(lo), float(hi)
+        self.agent: SeqSACAgent = agent
+        self.deltas = np.asarray(deltas, np.float32)
+        self.step = float(step)
+        self.max_delta = float(max_delta)
+        self.as_mid, self.as_span = float(as_mid), float(as_span)
+        self.near_widths = near_widths
+        self.K = int(K)
+        self.target, self.tol = float(target), float(tol)
+        self.alpha, self.beta = float(alpha), float(beta)
+        self.train_steps_per_micro = int(train_steps_per_micro)
+        self.train = bool(train)
+
+        self.prev_bg = None
+        self.last_delta = 0.0
+        self.err_i = 0.0
+
+    def cut_value(self): return self.cut
+
+    def _obs(self, bas_w, bnpv_w, bas_j, bg_rate):
+        self.err_i = update_err_i(self.err_i, bg_rate, self.target)
+        dbgcut = d_bg_d_cut_norm(bas_j, self.cut, self.step, self.target)
+        return make_event_seq_as(
+            bas=bas_w, bnpv=bnpv_w,
+            bg_rate=bg_rate, prev_bg_rate=self.prev_bg,
+            cut=self.cut,
+            as_mid=self.as_mid, as_span=self.as_span,
+            target=self.target, K=self.K,
+            last_delta=self.last_delta, max_delta=self.max_delta,
+            near_widths=self.near_widths,
+            step=self.step, tol=self.tol,
+            err_i=self.err_i, d_bg_d_cut=dbgcut,
+        )
+
+    def step_micro(self, *, bas_w, bnpv_w, bas_j, sas_tt, sas_aa, micro_global,
+                   chunk=None, **kwargs):
+        bg_before = float(Sing_Trigger(bas_j, self.cut))
+        if self.prev_bg is None:
+            self.prev_bg = bg_before
+
+        obs = self._obs(bas_w, bnpv_w, bas_j, bg_before)
+
+        # SAC acts greedily at evaluation; stochastic during training
+        a = int(self.agent.act(obs, greedy=(not self.train)))
+        dlt = float(self.deltas[a] * self.step)
+
+        sd = shield_delta(bg_before, self.target, self.tol, self.max_delta)
+        if sd is not None:
+            dlt = float(sd)
+            # find nearest action index for buffer consistency
+            a = int(np.argmin(np.abs(self.deltas * self.step - dlt)))
+
+        cut_next = float(np.clip(self.cut + dlt, self.lo, self.hi))
+        bg_after = float(Sing_Trigger(bas_j, cut_next))
+        tt_after = float(Sing_Trigger(sas_tt, cut_next))
+        aa_after = float(Sing_Trigger(sas_aa, cut_next))
+
+        obs_next = make_event_seq_as(
+            bas=bas_w, bnpv=bnpv_w,
+            bg_rate=bg_after, prev_bg_rate=bg_before,
+            cut=cut_next,
+            as_mid=self.as_mid, as_span=self.as_span,
+            target=self.target, K=self.K,
+            last_delta=dlt, max_delta=self.max_delta,
+            near_widths=self.near_widths,
+            step=self.step, tol=self.tol,
+            err_i=update_err_i(self.err_i, bg_after, self.target),
+            d_bg_d_cut=d_bg_d_cut_norm(bas_j, cut_next, self.step, self.target),
+        )
+
+        r = float(SeqSACAgent.compute_reward(
+            bg_rate=bg_after, target=self.target, tol=self.tol,
+            sig_rate_1=tt_after, sig_rate_2=aa_after,
+            delta_applied=dlt, max_delta=self.max_delta,
+            alpha=self.alpha, beta=self.beta,
+            prev_bg_rate=bg_before, gamma_stab=0.3,
+        ))
+
+        if self.train:
+            self.agent.buf.push(obs, a, r, obs_next, done=False)
+            for _ in range(self.train_steps_per_micro):
+                self.agent.train_step()
+
+        self.cut = cut_next
+        self.prev_bg = bg_after
+        self.last_delta = dlt
+
+        return CtrlOut(micro_global=micro_global)
+
+    def end_chunk(self, *, chunk: int, **kwargs):
+        pass   # SAC is off-policy; no end-of-chunk update needed
+
+
+class SACCtrlHT(BaseCtrl):
+    """Discrete SAC controller for HT cut."""
+    def __init__(self, name, init_cut, lo, hi, *, agent, deltas, step, max_delta,
+                 ht_mid, ht_span, near_widths, K, target, tol, alpha, beta,
+                 train_steps_per_micro: int = 1, train: bool = True):
+        self.name = name
+        self.cut = float(init_cut)
+        self.lo, self.hi = float(lo), float(hi)
+        self.agent: SeqSACAgent = agent
+        self.deltas = np.asarray(deltas, np.float32)
+        self.step = float(step)
+        self.max_delta = float(max_delta)
+        self.ht_mid, self.ht_span = float(ht_mid), float(ht_span)
+        self.near_widths = near_widths
+        self.K = int(K)
+        self.target, self.tol = float(target), float(tol)
+        self.alpha, self.beta = float(alpha), float(beta)
+        self.train_steps_per_micro = int(train_steps_per_micro)
+        self.train = bool(train)
+
+        self.prev_bg = None
+        self.last_delta = 0.0
+        self.err_i = 0.0
+
+    def cut_value(self): return self.cut
+
+    def step_micro(self, *, bht_w, bnpv_w, bht_j, sht_tt, sht_aa, micro_global,
+                   chunk=None, **kwargs):
+        bg_before = float(Sing_Trigger(bht_j, self.cut))
+        if self.prev_bg is None:
+            self.prev_bg = bg_before
+
+        self.err_i = update_err_i(self.err_i, bg_before, self.target)
+        dbgcut = d_bg_d_cut_norm(bht_j, self.cut, self.step, self.target)
+
+        obs = make_event_seq_ht(
+            bht=bht_w, bnpv=bnpv_w,
+            bg_rate=bg_before, prev_bg_rate=self.prev_bg,
+            cut=self.cut,
+            ht_mid=self.ht_mid, ht_span=self.ht_span,
+            target=self.target, K=self.K,
+            last_delta=self.last_delta, max_delta=self.max_delta,
+            near_widths=self.near_widths,
+            step=self.step, tol=self.tol,
+            err_i=self.err_i, d_bg_d_cut=dbgcut,
+        )
+
+        a = int(self.agent.act(obs, greedy=(not self.train)))
+        dlt = float(self.deltas[a] * self.step)
+
+        sd = shield_delta(bg_before, self.target, self.tol, self.max_delta)
+        if sd is not None:
+            dlt = float(sd)
+            a = int(np.argmin(np.abs(self.deltas * self.step - dlt)))
+
+        cut_next = float(np.clip(self.cut + dlt, self.lo, self.hi))
+        bg_after  = float(Sing_Trigger(bht_j, cut_next))
+        tt_after  = float(Sing_Trigger(sht_tt, cut_next))
+        aa_after  = float(Sing_Trigger(sht_aa, cut_next))
+
+        obs_next = make_event_seq_ht(
+            bht=bht_w, bnpv=bnpv_w,
+            bg_rate=bg_after, prev_bg_rate=bg_before,
+            cut=cut_next,
+            ht_mid=self.ht_mid, ht_span=self.ht_span,
+            target=self.target, K=self.K,
+            last_delta=dlt, max_delta=self.max_delta,
+            near_widths=self.near_widths,
+            step=self.step, tol=self.tol,
+            err_i=update_err_i(self.err_i, bg_after, self.target),
+            d_bg_d_cut=d_bg_d_cut_norm(bht_j, cut_next, self.step, self.target),
+        )
+
+        r = float(SeqSACAgent.compute_reward(
+            bg_rate=bg_after, target=self.target, tol=self.tol,
+            sig_rate_1=tt_after, sig_rate_2=aa_after,
+            delta_applied=dlt, max_delta=self.max_delta,
+            alpha=self.alpha, beta=self.beta,
+            prev_bg_rate=bg_before, gamma_stab=0.3,
+        ))
+
+        if self.train:
+            self.agent.buf.push(obs, a, r, obs_next, done=False)
+            for _ in range(self.train_steps_per_micro):
+                self.agent.train_step()
+
+        self.cut = cut_next
+        self.prev_bg = bg_after
+        self.last_delta = dlt
+
+        return CtrlOut(micro_global=micro_global)
+
+    def end_chunk(self, *, chunk: int, bht_j=None, bht_chunk=None, **kwargs):
+        pass   # off-policy; no end-of-chunk update
 
 
 class GRPOCtrl(BaseCtrl):
@@ -2367,7 +2572,7 @@ def make_original_plots_for_trigger(series, *, trigger_name, fixed_cut, target, 
     plot_rate_from_series(
         series,
         target=target, tol=tol,
-        title=f"{trigger_name} Trigger",
+        title=(r"$H_T$ Trigger" if trigger_name == "HT" else f"{trigger_name} Trigger"),
         outpath=plots_dir / f"rate_{trigger_name.lower()}",
         run_label=run_label,
     )
@@ -2405,7 +2610,8 @@ def plot_rate_from_series(series_by_method, *, target, tol, title, outpath, run_
     ax.set_ylabel("Background rate [kHz]")
     ax.set_ylim(0, 200)
     ax.grid(True, linestyle="--", alpha=0.5)
-    small_legend(ax, loc="best", title=title)
+    small_legend(ax, loc="upper left", title=title,
+                 bbox_to_anchor=(1.02, 1.0))
     add_cms_header(fig, run_label=run_label)
     finalize_diag_fig(fig)
     save_png(fig, str(outpath))
@@ -4315,10 +4521,28 @@ def main():
     ap.add_argument(
         "--baselines",
         type=str,
-        default="constant,pid,adt,dqn,ppo,grpo,gfpo_f,gfpo_fr,dqn_gamma_0",
-        help="Comma-separated: constant,pid,adt,dqn,ppo,grpo,gfpo_f,gfpo_fr,dqn_gamma_0"
+        default="constant,pid,adt,dqn,ppo,grpo,gfpo_f,gfpo_fr,dqn_gamma_0,spot,anomaly_transformer",
+        help="Comma-separated: constant,pid,adt,dqn,ppo,grpo,gfpo_f,gfpo_fr,dqn_gamma_0,spot,anomaly_transformer"
     )
 
+
+    # SPOT / DSPOT knobs
+    ap.add_argument("--spot-n-calib", type=int, default=50,
+                    help="SPOT: number of MC chunks used for GPD calibration before DSPOT online updates begin.")
+    ap.add_argument("--spot-window", type=int, default=5,
+                    help="SPOT: DSPOT sliding-window size in chunks.")
+
+    # Anomaly Transformer knobs
+    ap.add_argument("--at-n-calib", type=int, default=50,
+                    help="AnomalyTransformer: calibration chunks before deployment.")
+    ap.add_argument("--at-win-size", type=int, default=64,
+                    help="AnomalyTransformer: sliding window length L.")
+    ap.add_argument("--at-d-model", type=int, default=64)
+    ap.add_argument("--at-n-heads", type=int, default=4)
+    ap.add_argument("--at-e-layers", type=int, default=2)
+    ap.add_argument("--at-d-ff", type=int, default=128)
+    ap.add_argument("--at-epochs", type=int, default=3)
+    ap.add_argument("--at-lr", type=float, default=1e-4)
 
     ap.add_argument("--run-adt", action="store_true", help="Enable ADT baseline (DQN with action-hold + end-of-chunk updates)")
     ap.add_argument("--adt-l", type=int, default=10, help="ADT action-hold: update action every l micro-steps")
@@ -4349,6 +4573,12 @@ def main():
     ap.add_argument("--models-dir", type=str, default="outputs/demo_sing_grpo_as_feature_all_MC/models_mc")
     ap.add_argument("--eval-only", action="store_true",
                     help="rollout only (no training); implies --load-models")
+
+    # SPOT / AnomalyTransformer calibration persistence
+    ap.add_argument("--save-calib-dir", type=str, default=None,
+                    help="If set, save SPOT and AnomalyTransformer calibration state to this dir after the run.")
+    ap.add_argument("--load-calib-dir", type=str, default=None,
+                    help="If set, load SPOT/AT calibration from this dir (skips online calibration phase).")
 
 
 
@@ -4582,8 +4812,19 @@ def main():
     dqn_as_gamma_0 = SeqDQNAgent(seq_len=K, feat_dim=feat_dim_as, n_actions=len(AS_DELTAS),
                         cfg=dqn_cfg_gamma_0, seed=SEED)
 
-
-    
+    # ---------------- SAC agent for AS ----------------
+    sac_cfg_as = SACConfig(
+        lr=float(args.dqn_lr),
+        gamma=float(args.dqn_gamma),
+        batch_size=int(args.dqn_batch_size),
+        hidden=32,
+        rnn_type="gru",
+        tau=0.005,
+        auto_alpha=True,
+        target_entropy_ratio=0.5,
+    )
+    sac_as = SeqSACAgent(seq_len=K, feat_dim=feat_dim_as, n_actions=len(AS_DELTAS),
+                         cfg=sac_cfg_as, seed=SEED)
 
     controllers_as = []
 
@@ -4592,6 +4833,30 @@ def main():
 
     if "pid" in BASELINES:
         controllers_as.append(PIDCtrl("PID", fixed_AS_cut, as_lo, as_hi))
+
+    if "spot" in BASELINES:
+        controllers_as.append(SPOTCtrl(
+            "SPOT", fixed_AS_cut, as_lo, as_hi,
+            target=target,
+            n_calib_chunks=args.spot_n_calib,
+            window_chunks=args.spot_window,
+            train=True,
+        ))
+
+    if "anomaly_transformer" in BASELINES:
+        controllers_as.append(AnomalyTransformerCtrl(
+            "AnomalyTransformer", fixed_AS_cut, as_lo, as_hi,
+            target=target,
+            n_calib_chunks=args.at_n_calib,
+            win_size=args.at_win_size,
+            d_model=args.at_d_model,
+            n_heads=args.at_n_heads,
+            e_layers=args.at_e_layers,
+            d_ff=args.at_d_ff,
+            n_train_epochs=args.at_epochs,
+            lr=args.at_lr,
+            train=True,
+        ))
 
     if "dqn" in BASELINES:
         load_agent_bundle_into(dqn_as, Path(f"{args.models_dir}/AD/DQN.pt"), load_optim=False)
@@ -4617,6 +4882,20 @@ def main():
         alpha=args.alpha, beta=args.beta
         ))
     
+    if "sac" in BASELINES:
+        _sac_as_ckpt = Path(f"{args.models_dir}/AD/SAC.pt")
+        if _sac_as_ckpt.exists():
+            sd = torch.load(str(_sac_as_ckpt), map_location="cpu")
+            sac_as.load_state_dict(sd)
+        controllers_as.append(SACCtrl(
+            "SAC", fixed_AS_cut, as_lo, as_hi,
+            agent=sac_as, deltas=AS_DELTAS, step=AS_STEP, max_delta=MAX_DELTA_AS,
+            as_mid=as_mid, as_span=as_span, near_widths=near_widths_as, K=K,
+            target=target, tol=tol,
+            train_steps_per_micro=args.dqn_train_steps_per_micro,
+            alpha=args.alpha, beta=args.beta,
+        ))
+
     # --- ADT baseline (AS): DQN + action-hold + end-of-chunk updates ---
     if args.run_adt and ("adt" in BASELINES):
         adt_cfg_as = DQNConfig(
@@ -4773,6 +5052,17 @@ def main():
 
         controllers_ht = []
 
+        # ---------------- SAC agent (HT) ----------------
+        sac_cfg_ht = SACConfig(
+            lr=float(args.dqn_lr),
+            gamma=float(args.dqn_gamma),
+            batch_size=int(args.dqn_batch_size),
+            hidden=32, rnn_type="gru", tau=0.005,
+            auto_alpha=True, target_entropy_ratio=0.5,
+        )
+        sac_ht = SeqSACAgent(seq_len=K, feat_dim=feat_dim_ht, n_actions=len(HT_DELTAS),
+                             cfg=sac_cfg_ht, seed=SEED)
+
         # ---------------- DQN agent (HT) ----------------
         dqn_ht_cfg = DQNConfig(
             lr=float(args.dqn_lr),
@@ -4803,6 +5093,30 @@ def main():
         if "pid" in BASELINES:
             controllers_ht.append(PIDCtrlHT("PID", fixed_Ht_cut, ht_lo, ht_hi))
 
+        if "spot" in BASELINES:
+            controllers_ht.append(SPOTCtrlHT(
+                "SPOT", fixed_Ht_cut, ht_lo, ht_hi,
+                target=target,
+                n_calib_chunks=args.spot_n_calib,
+                window_chunks=args.spot_window,
+                train=True,
+            ))
+
+        if "anomaly_transformer" in BASELINES:
+            controllers_ht.append(AnomalyTransformerCtrlHT(
+                "AnomalyTransformer", fixed_Ht_cut, ht_lo, ht_hi,
+                target=target,
+                n_calib_chunks=args.at_n_calib,
+                win_size=args.at_win_size,
+                d_model=args.at_d_model,
+                n_heads=args.at_n_heads,
+                e_layers=args.at_e_layers,
+                d_ff=args.at_d_ff,
+                n_train_epochs=args.at_epochs,
+                lr=args.at_lr,
+                train=True,
+            ))
+
         if "dqn" in BASELINES:
             load_agent_bundle_into(dqn_ht, Path(f"{args.models_dir}/HT/DQN.pt"), load_optim=False)
             controllers_ht.append(DQNCtrlHT(
@@ -4829,6 +5143,20 @@ def main():
             train = False
             ))
         
+        if "sac" in BASELINES:
+            _sac_ht_ckpt = Path(f"{args.models_dir}/HT/SAC.pt")
+            if _sac_ht_ckpt.exists():
+                sd = torch.load(str(_sac_ht_ckpt), map_location="cpu")
+                sac_ht.load_state_dict(sd)
+            controllers_ht.append(SACCtrlHT(
+                "SAC", fixed_Ht_cut, ht_lo, ht_hi,
+                agent=sac_ht, deltas=HT_DELTAS, step=HT_STEP, max_delta=MAX_DELTA_HT,
+                ht_mid=ht_mid, ht_span=ht_span, near_widths=near_widths_ht, K=K,
+                target=target, tol=tol,
+                train_steps_per_micro=args.dqn_train_steps_per_micro,
+                alpha=args.alpha, beta=args.beta,
+            ))
+
         # --- ADT baseline (HT) ---
         if args.run_adt and ("adt" in BASELINES):
             adt_cfg_ht = DQNConfig(
@@ -5057,6 +5385,35 @@ def main():
     micro_counter_gfpo = 0
     micro_global = 0    # optional: single timeline across AS+HT micro-steps
 
+    # ---- load SPOT / AT calibration from a previous MC run (MC-train → CMS-adapt) ----
+    if args.load_calib_dir:
+        import json
+        calib_dir = Path(args.load_calib_dir)
+        _as_ctrls = controllers_as
+        _ht_ctrls = controllers_ht if (args.run_ht and 'controllers_ht' in dir()) else []
+        for ctrl in _as_ctrls:
+            if isinstance(ctrl, SPOTCtrl):
+                p = calib_dir / "SPOT_AD.json"
+                if p.exists():
+                    ctrl.load_state_dict(json.loads(p.read_text()))
+                    print(f"[SPOT AD] loaded calibration from {p}  cut={ctrl.cut:.4f}")
+            elif isinstance(ctrl, AnomalyTransformerCtrl):
+                p = calib_dir / "AnomalyTransformer_AD.pt"
+                if p.exists():
+                    ctrl.load_state_dict(torch.load(str(p), map_location="cpu"))
+                    print(f"[AT AD] loaded calibration from {p}  cut={ctrl.cut:.4f}")
+        for ctrl in _ht_ctrls:
+            if isinstance(ctrl, SPOTCtrl):
+                p = calib_dir / "SPOT_HT.json"
+                if p.exists():
+                    ctrl.load_state_dict(json.loads(p.read_text()))
+                    print(f"[SPOT HT] loaded calibration from {p}  cut={ctrl.cut:.4f}")
+            elif isinstance(ctrl, AnomalyTransformerCtrl):
+                p = calib_dir / "AnomalyTransformer_HT.pt"
+                if p.exists():
+                    ctrl.load_state_dict(torch.load(str(p), map_location="cpu"))
+                    print(f"[AT HT] loaded calibration from {p}  cut={ctrl.cut:.4f}")
+
     # ---- score distribution tracking (chunk-level) ----
     as_edges = _make_edges(Bas[start_event:], lo_q=0.5, hi_q=99.5, nbins=90)
     as_hists = []
@@ -5208,13 +5565,23 @@ def main():
         # PID chunk update happens once per chunk
         # Now log chunk metrics for ALL methods
         for ctrl in controllers_as:
-            cut = ctrl.cut_value()
-            bg = float(Sing_Trigger(bas, cut))
-            tt = float(Sing_Trigger(sas_tt, cut))
-            aa = float(Sing_Trigger(sas_aa, cut))
-            occ = float(near_occupancy(bas, cut, near_widths_as)[1])
+            # AnomalyTransformer uses anomaly scores instead of raw AS scores
+            if hasattr(ctrl, 'compute_scores'):
+                _bas_eval   = ctrl.compute_scores(bas)
+                _tt_eval    = ctrl.compute_scores(sas_tt) if len(sas_tt) > 0 else np.zeros(0, dtype=np.float32)
+                _aa_eval    = ctrl.compute_scores(sas_aa) if len(sas_aa) > 0 else np.zeros(0, dtype=np.float32)
+                _bas_j_eval = ctrl.compute_scores(bas_j)  if len(bas_j)  > 0 else np.zeros(0, dtype=np.float32)
+                occ = 0.0   # occupancy not defined in anomaly-score space
+            else:
+                _bas_eval, _tt_eval, _aa_eval, _bas_j_eval = bas, sas_tt, sas_aa, bas_j
+                occ = float(near_occupancy(bas, ctrl.cut_value(), near_widths_as)[1])
 
-            cm = confusion_counts_at_cut_split(bas_j, sas_tt, sas_aa, cut)
+            cut = ctrl.cut_value()
+            bg = float(Sing_Trigger(_bas_eval, cut))
+            tt = float(Sing_Trigger(_tt_eval, cut))
+            aa = float(Sing_Trigger(_aa_eval, cut))
+
+            cm = confusion_counts_at_cut_split(_bas_j_eval, _tt_eval, _aa_eval, cut)
             log_chunk_stats(
                 chunk=t, trigger="AD", method=ctrl.name,
                 cut=cut, bg_pct=bg, tt=tt, aa=aa,
@@ -5225,8 +5592,8 @@ def main():
                 tp_h4b=cm["tp_h4b"], fn_h4b=cm["fn_h4b"],
                 tpr_tt=cm["tpr_tt"], precision_tt=cm["precision_tt"], f1_tt=cm["f1_tt"],
                 tpr_h4b=cm["tpr_h4b"], precision_h4b=cm["precision_h4b"], f1_h4b=cm["f1_h4b"],
-            )   
-            ctrl.end_chunk(chunk=t, bas_j=bas) 
+            )
+            ctrl.end_chunk(chunk=t, bas_j=bas)
 
         # AD score distribution for this chunk
         h_as, _ = np.histogram(bas, bins=as_edges, density=True)
@@ -5271,6 +5638,31 @@ def main():
 
             tt_ht_dqn = Sing_Trigger(sht_tt, Ht_cut_dqn)
             aa_ht_dqn = Sing_Trigger(sht_aa, Ht_cut_dqn)        
+
+    # ---- save SPOT / AT calibration for later CMS deployment ----
+    if args.save_calib_dir:
+        import json
+        calib_dir = Path(args.save_calib_dir)
+        calib_dir.mkdir(parents=True, exist_ok=True)
+        for ctrl in controllers_as:
+            if isinstance(ctrl, SPOTCtrl) and ctrl._calibrated:
+                p = calib_dir / "SPOT_AD.json"
+                p.write_text(json.dumps(ctrl.state_dict(), indent=2))
+                print(f"[SPOT] saved calibration → {p}")
+            elif isinstance(ctrl, AnomalyTransformerCtrl) and ctrl._calibrated:
+                p = calib_dir / "AnomalyTransformer_AD.pt"
+                torch.save(ctrl.state_dict(), str(p))
+                print(f"[AT] saved calibration → {p}")
+        if args.run_ht and 'controllers_ht' in dir():
+            for ctrl in controllers_ht:
+                if isinstance(ctrl, SPOTCtrl) and ctrl._calibrated:
+                    p = calib_dir / "SPOT_HT.json"
+                    p.write_text(json.dumps(ctrl.state_dict(), indent=2))
+                    print(f"[SPOT HT] saved calibration → {p}")
+                elif isinstance(ctrl, AnomalyTransformerCtrl) and ctrl._calibrated:
+                    p = calib_dir / "AnomalyTransformer_HT.pt"
+                    torch.save(ctrl.state_dict(), str(p))
+                    print(f"[AT HT] saved calibration → {p}")
 
     # --- always dump the chunk table ---
     write_chunk_stats_csv(tables_dir / "chunk_stats.csv")
