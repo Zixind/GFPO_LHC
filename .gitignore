@@ -15,7 +15,11 @@ runs/
 results/
 figs/
 *.pdf
+*.png
 outputs/
+
+# === Experiment tracking (wandb run logs/artifacts) ===
+wandb/
 
 # === Temporary / Cache ===
 __pycache__/
