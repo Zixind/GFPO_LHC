@@ -214,115 +214,92 @@ python3 -m Control.realMultiTrigger --agent v3 \
 
 ## Step 4 RL-based Trigger Control (GFPO framework)
 
-The RL pipeline trains adaptive trigger policies on Monte Carlo (MC) simulation, validates on held-out MC data, and deploys on CMS real collision data. The MC dataset (`Trigger_food_MC.h5`) contains 185 chunks after the calibration window; we use an 80/20 temporal split (148 train / 37 validation) for hyperparameter tuning.
+The RL pipeline trains adaptive trigger policies on Monte Carlo (MC) simulation
+and deploys them on CMS real collision data. The MC dataset
+(`Trigger_food_MC.h5`) contains ~185 chunks after the calibration window. We use
+an 80/20 temporal split (chunks 0–147 train / 148–end held-out).
 
-### 4a. Hyperparameter sweep on 80% MC (optional)
+All experiments are reproduced by **three self-contained scripts**, one per
+evaluation setting. Each runs all baselines over 3 seeds (42, 123, 456) and
+writes a `paper_table.csv` per seed. **No setting overlaps training and
+evaluation data.**
 
-Grid search over reward weights $\lambda_1$ and $\lambda_2$. Each run trains on the first 148 chunks with `--max-chunks 148`.
+| # | Setting | Train on | Evaluate on | Script |
+|---|---------|----------|-------------|--------|
+| 1 | MC hold-out | first **80%** MC (chunks 0–147) | held-out **20%** MC (148–end) | `run_setting1_mc_holdout.sh` |
+| 2 | Sim-to-real (frozen) | **full** MC | CMS Run 283408 (frozen) | `run_setting2_cms_deploy.sh` |
+| 3 | Test-time training | **full** MC | CMS Run 283408 (online `--ttt`) | `run_setting3_cms_ttt.sh` |
 
 ```bash
-# Create the sweep (5x5 grid: lambda_1, lambda_2 in {0.0, 0.25, 0.5, 0.75, 1.0})
-wandb sweep sweep_lambda_train80.yaml
+# Setting 1 — train on 80% MC, freeze, report ONLY the held-out 20% MC
+bash run_setting1_mc_holdout.sh
 
-# Launch the sweep agent (runs all 25 configurations sequentially)
-wandb agent <SWEEP_ID>
+# Setting 2 — train on full MC, freeze, deploy on CMS real data (sim-to-real)
+bash run_setting2_cms_deploy.sh
+
+# Setting 3 — load full-MC checkpoints, adapt online on CMS (needs Setting 2 first)
+bash run_setting3_cms_ttt.sh
 ```
 
-After the sweep, inspect the wandb dashboard to select the best $(\lambda_1, \lambda_2)$ based on validation signal efficiency and InBand rate.
+**Baselines** (run by every script): `constant`, `pid`, `adt`, `dqn`, `dqn_f`,
+`ppo`, `grpo`, `lgrpo`, `gfpo_f`, `gfpo_fr`, `cpo`, plus `spot` (DSPOT). Our
+methods are **GFPO-F** and **GFPO-FR**.
 
-**Recommended defaults:** Based on Pareto frontier analysis across all methods (DQN, PPO, ADT, GRPO, GFPO-F, GFPO-FR) and both triggers (AD, HT), we select $\lambda_1 = 0.25$, $\lambda_2 = 1.0$. This combination achieves mean InBand = 0.952 with strong signal efficiency across all methods while keeping both penalty terms active. GFPO-F is the most robust method, achieving InBand $\geq$ 0.993 regardless of $(\lambda_1, \lambda_2)$.
-
-### 4b. Train on 80% MC
-
-Train RL agents (GFPO-F, GFPO-FR, GRPO, DQN, PPO, ADT) on the first 148 chunks and save model checkpoints.
+Each script is a thin wrapper around two entry points — the training script
+(`RL/demo_single_trigger_grpo_as_feature_all_training.py`) and the rollout
+script (`RL/demo_single_trigger_grpo_as_feature_all_rollout_v2.py`). The core
+commands are, for one seed:
 
 ```bash
+# (Setting 1a) train on the first 80% MC and save checkpoints
 python RL/demo_single_trigger_grpo_as_feature_all_training.py \
-  --run-ht --run-adt --save-models \
-  --max-chunks 148 \
-  --lambda_1 0.25 --lambda_2 1.0 \
-  --models-dir outputs/best_mc/models_mc \
-  --outdir outputs/best_mc
+  --input Data/Trigger_food_MC.h5 --control MC --outdir outputs/mc_seed_42 \
+  --seed 42 --run-ht --run-adt --baselines "adt,dqn,dqn_f,ppo,grpo,gfpo_f,gfpo_fr" \
+  --max-chunks 148 --ht-step 2.0 --alpha 0.3 --lambda_1 0.25 \
+  --group-size-sample 64 --group-size-keep 16 --save-models
+
+# (Setting 1b) freeze, evaluate ALL baselines on the held-out 20% MC only
+python RL/demo_single_trigger_grpo_as_feature_all_rollout_v2.py \
+  --input Data/Trigger_food_MC.h5 --control MC --outdir outputs/mc_seed_42_eval_holdout \
+  --models-dir outputs/mc_seed_42_all_MC/models_mc --load-models --eval-only \
+  --seed 42 --run-ht --run-adt --start-chunk 148 \
+  --baselines "constant,pid,adt,dqn,dqn_f,ppo,grpo,lgrpo,gfpo_f,gfpo_fr,cpo" \
+  --ht-step 2.0 --alpha 0.3 --group-size-sample 64 --group-size-keep 16
+
+# (Setting 2) full-MC training (drop --max-chunks); deploy frozen on CMS
+python ...all_rollout_v2.py --input Data/Matched_data_2016_dim2.h5 --control RealData \
+  --models-dir outputs/mc_seed_42_fulltrain_all_MC/models_mc --load-models --eval-only ...
+
+# (Setting 3) same full-MC checkpoint, adapt online on CMS with --ttt
+python ...all_rollout_v2.py --input Data/Matched_data_2016_dim2.h5 --control RealData \
+  --models-dir outputs/mc_seed_42_fulltrain_all_MC/models_mc --load-models --ttt ...
 ```
 
-### 4c. Validate on held-out 20% MC
-
-Evaluate the trained models on chunks 149-185 (the held-out validation set) to confirm generalization without data leakage.
-
-```bash
-python RL/demo_single_trigger_grpo_as_feature_all_rollout.py \
-  --input Data/Trigger_food_MC.h5 --control MC \
-  --models-dir outputs/best_mc/models_mc \
-  --run-ht --run-adt \
-  --skip-chunks 148 \
-  --lambda_1 0.25 --lambda_2 1.0 \
-  --outdir outputs/val_20pct_mc
-```
-
-### 4d. Deploy on CMS real data
-
-Roll out the MC-trained models on CMS Run 2016 collision data to evaluate sim-to-real transfer.
-
-```bash
-python RL/demo_single_trigger_grpo_as_feature_all_rollout.py \
-  --input Data/Matched_data_2016_dim2.h5 --control RealData \
-  --models-dir outputs/best_mc/models_mc \
-  --run-ht --run-adt \
-  --lambda_1 0.25 --lambda_2 1.0 \
-  --outdir outputs/rollout_real
-```
-
-### 4e. (Optional) Evaluate on full MC
-
-Roll out trained models on the entire MC dataset (all 185 chunks) for completeness.
-
-```bash
-python RL/demo_single_trigger_grpo_as_feature_all_rollout.py \
-  --input Data/Trigger_food_MC.h5 --control MC \
-  --models-dir outputs/best_mc/models_mc \
-  --run-ht --run-adt \
-  --lambda_1 0.25 --lambda_2 1.0 \
-  --outdir outputs/rollout_full_mc
-```
-
-### 4f. (Optional) Train and deploy directly on CMS real data
-
-For comparison, train directly on real data and evaluate on it (no sim-to-real gap).
-
-```bash
-# Train on real data
-python RL/demo_single_trigger_grpo_as_feature_all_training.py \
-  --input Data/Matched_data_2016_dim2.h5 --control RealData \
-  --run-ht --run-adt --save-models \
-  --lambda_1 0.25 --lambda_2 1.0 \
-  --models-dir outputs/best_real/models_real \
-  --outdir outputs/best_real
-
-# Deploy real-trained models on real data
-python RL/demo_single_trigger_grpo_as_feature_all_rollout.py \
-  --input Data/Matched_data_2016_dim2.h5 --control RealData \
-  --models-dir outputs/best_real/models_real \
-  --run-ht --run-adt \
-  --lambda_1 0.25 --lambda_2 1.0 \
-  --outdir outputs/rollout_real_on_real
-```
+> **Reproducibility note.** Only the held-out portion is reported for MC.
+> Setting 1 trains with `--max-chunks 148` and evaluates with
+> `--start-chunk 148 --eval-only`; Settings 2–3 train on the full MC trajectory
+> and never touch CMS data during training. GFPO is robust to the reward weights
+> — the explicit feasibility filter pins the operating point, so results are
+> essentially unchanged across the $(\lambda_1, \lambda_2)$ grid (we use
+> $\lambda_1 = 0.25$).
 
 ### Key RL arguments
 
 | Argument | Description |
 |----------|-------------|
-| `--max-chunks N` | Use only first N chunks for training (148 = 80% train split) |
-| `--skip-chunks N` | Skip first N chunks for validation (148 = start at 20% held-out) |
-| `--save-models` | Save trained model checkpoints to disk |
-| `--models-dir PATH` | Directory to load/save model `.pt` files |
-| `--run-ht` | Enable HT trigger alongside AD trigger |
-| `--run-adt` | Enable ADT baseline (DQN with action-hold) |
-| `--alpha` | $t\bar{t}$ focus weight (default: 0.7) |
-| `--lambda_1` | Background rate tracking reward weight (default: 0.25) |
-| `--lambda_2` | Threshold movement penalty weight (default: 1.0) |
-| `--input PATH` | Input dataset path |
-| `--control MC\|RealData` | Data source type for calibration logic |
-| `--outdir PATH` | Output directory for plots and logs |
+| `--max-chunks N` | Train on only the first N chunks (148 = 80% MC split; omit for full MC) |
+| `--start-chunk N` | Begin evaluation at chunk N (148 = held-out 20%) |
+| `--eval-only` | Frozen rollout — no policy updates (Settings 1, 2) |
+| `--ttt` | Test-time training — online policy updates during deployment (Setting 3) |
+| `--save-models` / `--load-models` | Save / load `.pt` checkpoints |
+| `--models-dir PATH` | Directory of model `.pt` files |
+| `--baselines "a,b,c"` | Comma-separated baselines to run |
+| `--run-ht` / `--run-adt` | Enable the HT trigger / ADT baseline |
+| `--alpha` | $t\bar{t}$ focus weight |
+| `--lambda_1` | Background-rate-tracking vs. signal reward weight |
+| `--lambda_2` | Threshold-movement (smoothness) penalty weight |
+| `--control MC\|RealData` | Data source (MC simulation or CMS real data) |
+| `--outdir PATH` | Output directory (`_all_MC` / `_all_RealData` suffix added automatically) |
 
 ## Step 5 FPGA Firmware Export (StateEncoder → HLS C++)
 

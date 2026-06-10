@@ -21,6 +21,18 @@ outputs/
 # === Experiment tracking (wandb run logs/artifacts) ===
 wandb/
 
+# === Reference-only run scripts (kept locally, not in the open-source release) ===
+# The 3 canonical entry points run_setting{1,2,3}_*.sh are tracked; everything
+# below is the prior/ancillary runners kept locally for reference.
+run_exp*.sh
+run_multiseed_*.sh
+run_pareto_holdout_*.sh
+run_grpo_g_sweep_seeds.sh
+sweep_dqn_hyperparams.sh
+deploy_state_repr_ablation.sh
+cutover_to_parallel.sh
+watch_and_plot.sh
+
 # === Temporary / Cache ===
 __pycache__/
 *.pyc
