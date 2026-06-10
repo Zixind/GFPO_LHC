@@ -21,10 +21,10 @@ outputs/
 # === Experiment tracking (wandb run logs/artifacts) ===
 wandb/
 
-# === Anomaly-detection benchmarks (UNSW-NB15, NAB, HAI) ===
-# Ignore the datasets (~2 GB) and trained checkpoints; ship only the
+# === Anomaly-detection benchmarks (UNSW-NB15, NAB) ===
+# Ignore the datasets and trained checkpoints; ship only the
 # train/preprocess/rollout scripts so users regenerate them from the public
-# UNSW-NB15 / NAB / HAI sources.
+# UNSW-NB15 / NAB sources.
 anomaly_detection/data/
 anomaly_detection/models*/
 *.pkl
