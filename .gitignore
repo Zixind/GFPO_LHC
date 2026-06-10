@@ -29,6 +29,16 @@ anomaly_detection/data/
 anomaly_detection/models*/
 *.pkl
 
+# === Exploratory / reference artifacts (kept locally, not in the release) ===
+# oracle per-chunk cut reference CSVs
+chunk_cuts_*.csv
+# exploratory data-analysis plotting scripts
+eda_*.py
+# wandb sweep configs (lambda + state-repr ablation)
+sweep_*.yaml
+# ablation-study scripts/outputs (none shipped right now)
+*ablation*
+
 # === Reference-only run scripts (kept locally, not in the open-source release) ===
 # The 3 canonical entry points run_setting{1,2,3}_*.sh are tracked; everything
 # below is the prior/ancillary runners kept locally for reference.

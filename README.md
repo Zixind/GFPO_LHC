@@ -1,4 +1,6 @@
-# Towards a Self-Driving Trigger at the LHC: Adaptive Response in Real Time v2
+# Learning to Trigger: Reinforcement Learning at the Large Hadron Collider
+
+This is the codebase for this paper.
 
 For Control-based methods, please refer: https://github.com/Shaghayegh-E/Adaptive-ParticlePhysics-Triggers
 
