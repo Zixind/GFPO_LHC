@@ -1,7 +1,5 @@
 # Learning to Trigger: Reinforcement Learning at the Large Hadron Collider
 
-This is the codebase for this paper.
-
 For Control-based methods, please refer: https://github.com/Shaghayegh-E/Adaptive-ParticlePhysics-Triggers
 
 This repo is a follow-up on RL methods for LHC triggers.
