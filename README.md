@@ -275,14 +275,6 @@ python ...all_rollout_v2.py --input Data/Matched_data_2016_dim2.h5 --control Rea
   --models-dir outputs/mc_seed_42_fulltrain_all_MC/models_mc --load-models --ttt ...
 ```
 
-> **Reproducibility note.** Only the held-out portion is reported for MC.
-> Setting 1 trains with `--max-chunks 148` and evaluates with
-> `--start-chunk 148 --eval-only`; Settings 2–3 train on the full MC trajectory
-> and never touch CMS data during training. GFPO is robust to the reward weights
-> — the explicit feasibility filter pins the operating point, so results are
-> essentially unchanged across the $(\lambda_1, \lambda_2)$ grid (we use
-> $\lambda_1 = 0.25$).
-
 ### Key RL arguments
 
 | Argument | Description |
