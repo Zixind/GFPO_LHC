@@ -34,6 +34,18 @@ anomaly_detection/data/UNSW_NB15_testing-set.csv
 
 ### NAB (auto-downloaded)
 
+The Numenta Anomaly Benchmark (NAB; Lavin & Ahmad, 2015) is a standard benchmark
+for streaming anomaly detection: real-world univariate metrics, sampled at
+regular intervals and hand-labeled with *anomaly windows*, processed strictly
+online (one timestep at a time, no lookahead) with detections rewarded for being
+early and within a labeled window. The streams cover everyday monitoring domains
+— cloud-server metrics (Amazon CloudWatch CPU/network/disk), machine and ambient
+temperatures, server CPU during known faults, taxi ridership, Twitter volume,
+freeway traffic, and online-ad cost-per-click. We use the `realKnownCause` and
+`realAWSCloudwatch` categories (24 streams of server and machine telemetry), as
+they best match the trigger setting: a single live metric on which the policy
+must raise alerts on the fly under a controlled alert budget.
+
 NAB is cloned automatically by the preprocessing script — **no manual download
 needed** (requires `git` + network). It is fetched from:
 
