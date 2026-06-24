@@ -96,5 +96,10 @@ env/
 Data_SingleTrigger.py
 Run_SingleTrigger.py
 
+# === Plot scripts excluded from open-source release ===
+plot_cms_inband_drift.py
+plot_pareto_sweep.py
+plot_signal_background_overlap_cms.py
+plot_signal_background_overlap_mc.py
 
 paper/
