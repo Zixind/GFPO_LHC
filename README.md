@@ -300,7 +300,7 @@ If you use this code or build on this work, please cite ([arXiv:2606.23993](http
 ```bibtex
 @misc{ding2026learning,
   title         = {Learning to Trigger: Reinforcement Learning at the Large Hadron Collider},
-  author        = {Ding, Zixin and Emam, Shaghayegh and Salvi, Giovanna and Tosciri, Cecilia and Gandrakota, Abhijith and Ngadiuba, Jennifer and Tran, Nhan and Herwig, Christian and Miller, David W. and Chen, Yuxin},
+  author        = {Ding, Zixin and Emami, Shaghayegh and Salvi, Giovanna and Tosciri, Cecilia and Gandrakota, Abhijith and Ngadiuba, Jennifer and Tran, Nhan and Herwig, Christian and Miller, David W. and Chen, Yuxin},
   year          = {2026},
   eprint        = {2606.23993},
   archivePrefix = {arXiv},
