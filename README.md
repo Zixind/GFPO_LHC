@@ -292,3 +292,19 @@ python ...all_rollout_v2.py --input Data/Matched_data_2016_dim2.h5 --control Rea
 | `--lambda_2` | Threshold-movement (smoothness) penalty weight |
 | `--control MC\|RealData` | Data source (MC simulation or CMS real data) |
 | `--outdir PATH` | Output directory (`_all_MC` / `_all_RealData` suffix added automatically) |
+
+## Citing this paper
+
+If you use this code or build on this work, please cite ([arXiv:2606.23993](https://arxiv.org/abs/2606.23993)):
+
+```bibtex
+@misc{ding2026learning,
+  title         = {Learning to Trigger: Reinforcement Learning at the Large Hadron Collider},
+  author        = {Ding, Zixin and Emam, Shaghayegh and Salvi, Giovanna and Tosciri, Cecilia and Gandrakota, Abhijith and Ngadiuba, Jennifer and Tran, Nhan and Herwig, Christian and Miller, David W. and Chen, Yuxin},
+  year          = {2026},
+  eprint        = {2606.23993},
+  archivePrefix = {arXiv},
+  primaryClass  = {cs.LG},
+  url           = {https://arxiv.org/abs/2606.23993}
+}
+```
