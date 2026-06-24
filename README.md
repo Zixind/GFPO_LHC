@@ -1,5 +1,7 @@
 # Learning to Trigger: Reinforcement Learning at the Large Hadron Collider
 
+**Repository developer:** Zixin Ding ([zixin@uchicago.edu](mailto:zixin@uchicago.edu))
+
 For Control-based methods, please refer: https://github.com/Shaghayegh-E/Adaptive-ParticlePhysics-Triggers
 
 This repo is a follow-up on RL methods for LHC triggers.
