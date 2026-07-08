@@ -5,6 +5,10 @@
 
 **Repository developer:** Zixin Ding ([zixin@uchicago.edu](mailto:zixin@uchicago.edu))
 
+## News
+
+- **2026-07** 🎉 Our paper has been accepted to the [ICML 2026 AI4Physics Workshop](https://ai4physics-workshop.github.io) as an **Oral**!
+
 For Control-based methods, please refer: https://github.com/Shaghayegh-E/Adaptive-ParticlePhysics-Triggers
 
 This repo is a follow-up on RL methods for LHC triggers.
