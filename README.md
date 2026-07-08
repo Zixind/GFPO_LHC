@@ -1,5 +1,8 @@
 # Learning to Trigger: Reinforcement Learning at the Large Hadron Collider
 
+[![arXiv](https://img.shields.io/badge/arXiv-2606.23993-b31b1b.svg)](https://arxiv.org/abs/2606.23993)
+[![Paper page](https://huggingface.co/datasets/huggingface/badges/resolve/main/paper-page-md.svg)](https://huggingface.co/papers/2606.23993)
+
 **Repository developer:** Zixin Ding ([zixin@uchicago.edu](mailto:zixin@uchicago.edu))
 
 For Control-based methods, please refer: https://github.com/Shaghayegh-E/Adaptive-ParticlePhysics-Triggers
