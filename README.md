@@ -1,7 +1,7 @@
 # Learning to Trigger: Reinforcement Learning at the Large Hadron Collider
 
 [![arXiv](https://img.shields.io/badge/arXiv-2606.23993-b31b1b.svg)](https://arxiv.org/abs/2606.23993)
-[![Paper page](https://huggingface.co/datasets/huggingface/badges/resolve/main/paper-page-md.svg)](https://huggingface.co/papers/2606.23993)
+[![Hugging Face](https://img.shields.io/badge/Hugging%20Face-Paper%20page-FFD21E?logo=huggingface&logoColor=black)](https://huggingface.co/papers/2606.23993)
 
 **Repository developer:** Zixin Ding ([zixin@uchicago.edu](mailto:zixin@uchicago.edu))
 
