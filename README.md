@@ -2,7 +2,7 @@
 
 [![arXiv](https://img.shields.io/badge/arXiv-2606.23993-b31b1b.svg)](https://arxiv.org/abs/2606.23993)
 [![Hugging Face](https://img.shields.io/badge/Hugging%20Face-Paper%20page-FFD21E?logo=huggingface&logoColor=black)](https://huggingface.co/papers/2606.23993)
-[![HF Dataset](https://img.shields.io/badge/%F0%9F%A4%97%20Dataset-self--driving--trigger--l1-FFD21E)](https://huggingface.co/datasets/zixinding/self-driving-trigger-l1)
+[![HF Dataset](https://img.shields.io/badge/%F0%9F%A4%97%20Dataset-CMS--trigger--l1-FFD21E)](https://huggingface.co/datasets/zixinding/CMS-trigger-l1)
 
 **Repository developer:** Zixin Ding ([zixin@uchicago.edu](mailto:zixin@uchicago.edu))
 
@@ -48,7 +48,7 @@ Two main dataset categories are included:
 
 All datasets (base samples and precomputed control-variable files) are publicly hosted on both **HuggingFace** and **Zenodo**:
 
-➡️ **HuggingFace Dataset:** [huggingface.co/datasets/zixinding/self-driving-trigger-l1](https://huggingface.co/datasets/zixinding/self-driving-trigger-l1)
+➡️ **HuggingFace Dataset:** [huggingface.co/datasets/zixinding/CMS-trigger-l1](https://huggingface.co/datasets/zixinding/CMS-trigger-l1)
 
 ➡️ **Zenodo Record (DOI 10.5281/zenodo.17399948):** [https://zenodo.org/records/17399948](https://zenodo.org/records/17399948)
 
@@ -57,7 +57,7 @@ All datasets (base samples and precomputed control-variable files) are publicly 
 > Quick download from HuggingFace:
 > ```python
 > from huggingface_hub import hf_hub_download
-> path = hf_hub_download(repo_id="zixinding/self-driving-trigger-l1",
+> path = hf_hub_download(repo_id="zixinding/CMS-trigger-l1",
 >                        filename="Trigger_food_MC.h5", repo_type="dataset")
 > ```
 
