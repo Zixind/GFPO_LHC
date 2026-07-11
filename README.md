@@ -8,7 +8,7 @@
 
 ## News
 
-- **2026-07** 🏆 Our paper won the **Best Paper Award** at the [ICML 2026 AI4Physics Workshop](https://ai4physics-workshop.github.io) and was selected for an **Oral** presentation!
+- **2026-07** 🏆 Our paper won the **Best Paper Award** (1 out of 194 submissions) at the [ICML 2026 AI4Physics Workshop](https://ai4physics-workshop.github.io) and was selected for an **Oral** presentation!
 
 For Control-based methods, please refer: https://github.com/Shaghayegh-E/Adaptive-ParticlePhysics-Triggers
 
